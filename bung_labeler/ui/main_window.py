@@ -491,55 +491,69 @@ class MainWindow(QMainWindow):
         layout.addWidget(files_box)
 
         params_box = QGroupBox("Training parameters")
-        form = QFormLayout(params_box)
+        grid = QGridLayout(params_box)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(4)
+
+        def _lbl(text):
+            l = QLabel(text); l.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            return l
 
         self.train_task_combo = QComboBox()
         self.train_task_combo.addItems(list(training_logic.VALID_TASKS))
         if str(params["task"]) in training_logic.VALID_TASKS:
             self.train_task_combo.setCurrentText(str(params["task"]))
-        form.addRow("Task", self.train_task_combo)
+
+        self.train_device_edit = QLineEdit(str(params["device"]))
+        self.train_device_edit.setPlaceholderText("0, cpu, cuda:0")
 
         self.train_imgsz_spin = QSpinBox(); self.train_imgsz_spin.setRange(32, 8192)
         self.train_imgsz_spin.setSingleStep(32); self.train_imgsz_spin.setValue(int(params["imgsz"]))
-        form.addRow("Image size", self.train_imgsz_spin)
 
         self.train_batch_spin = QSpinBox(); self.train_batch_spin.setRange(-1, 1024)
         self.train_batch_spin.setValue(int(params["batch"]))
         self.train_batch_spin.setToolTip("-1 lets Ultralytics auto-pick the batch size for your GPU.")
-        form.addRow("Batch (-1 = auto)", self.train_batch_spin)
 
         self.train_epochs_spin = QSpinBox(); self.train_epochs_spin.setRange(1, 100000)
         self.train_epochs_spin.setValue(int(params["epochs"]))
-        form.addRow("Epochs", self.train_epochs_spin)
 
         self.train_patience_spin = QSpinBox(); self.train_patience_spin.setRange(0, 100000)
         self.train_patience_spin.setValue(int(params["patience"]))
-        form.addRow("Patience", self.train_patience_spin)
 
         self.train_workers_spin = QSpinBox(); self.train_workers_spin.setRange(0, 256)
         self.train_workers_spin.setValue(int(params["workers"]))
-        form.addRow("Workers", self.train_workers_spin)
-
-        self.train_device_edit = QLineEdit(str(params["device"]))
-        self.train_device_edit.setPlaceholderText("0, cpu, cuda:0")
-        form.addRow("Device", self.train_device_edit)
-
-        self.train_project_edit = QLineEdit(str(params["project"]))
-        project_browse = QPushButton("Folder...")
-        project_browse.clicked.connect(self.browse_train_project)
-        r = QHBoxLayout(); r.addWidget(self.train_project_edit); r.addWidget(project_browse)
-        form.addRow("Output folder", r)
-
-        self.train_name_edit = QLineEdit(str(params["name"]))
-        form.addRow("Run name", self.train_name_edit)
-
-        self.train_resume_check = QCheckBox("Resume from last checkpoint")
-        self.train_resume_check.setChecked(bool(params.get("resume", False)))
-        form.addRow("Resume", self.train_resume_check)
 
         self.train_yolo_exe_edit = QLineEdit(str(saved.get("yolo_exe", "yolo")))
         self.train_yolo_exe_edit.setToolTip("Ultralytics CLI entrypoint. Use a full path if 'yolo' is not on PATH.")
-        form.addRow("yolo executable", self.train_yolo_exe_edit)
+
+        # Row 0: Task | Device
+        grid.addWidget(_lbl("Task"), 0, 0); grid.addWidget(self.train_task_combo, 0, 1)
+        grid.addWidget(_lbl("Device"), 0, 2); grid.addWidget(self.train_device_edit, 0, 3)
+        # Row 1: Image size | Batch
+        grid.addWidget(_lbl("Image size"), 1, 0); grid.addWidget(self.train_imgsz_spin, 1, 1)
+        grid.addWidget(_lbl("Batch (-1=auto)"), 1, 2); grid.addWidget(self.train_batch_spin, 1, 3)
+        # Row 2: Epochs | Patience
+        grid.addWidget(_lbl("Epochs"), 2, 0); grid.addWidget(self.train_epochs_spin, 2, 1)
+        grid.addWidget(_lbl("Patience"), 2, 2); grid.addWidget(self.train_patience_spin, 2, 3)
+        # Row 3: Workers | yolo executable
+        grid.addWidget(_lbl("Workers"), 3, 0); grid.addWidget(self.train_workers_spin, 3, 1)
+        grid.addWidget(_lbl("yolo exe"), 3, 2); grid.addWidget(self.train_yolo_exe_edit, 3, 3)
+        # Row 4: Output folder (spans both right columns)
+        self.train_project_edit = QLineEdit(str(params["project"]))
+        project_browse = QPushButton("Folder...")
+        project_browse.clicked.connect(self.browse_train_project)
+        proj_row = QHBoxLayout(); proj_row.setContentsMargins(0, 0, 0, 0)
+        proj_row.addWidget(self.train_project_edit); proj_row.addWidget(project_browse)
+        proj_widget = QWidget(); proj_widget.setLayout(proj_row)
+        grid.addWidget(_lbl("Output folder"), 4, 0); grid.addWidget(proj_widget, 4, 1, 1, 3)
+        # Row 5: Run name | Resume
+        self.train_name_edit = QLineEdit(str(params["name"]))
+        self.train_resume_check = QCheckBox("Resume from checkpoint")
+        self.train_resume_check.setChecked(bool(params.get("resume", False)))
+        grid.addWidget(_lbl("Run name"), 5, 0); grid.addWidget(self.train_name_edit, 5, 1)
+        grid.addWidget(_lbl("Resume"), 5, 2); grid.addWidget(self.train_resume_check, 5, 3)
+
+        grid.setColumnStretch(1, 1); grid.setColumnStretch(3, 1)
         layout.addWidget(params_box)
 
         btn_row = QHBoxLayout()
