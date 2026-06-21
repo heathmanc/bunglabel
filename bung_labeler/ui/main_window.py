@@ -577,9 +577,12 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._recipe_tab(), "Recipe / SKU")
         tabs.addTab(self._capture_tab(), "Live Capture")
         tabs.addTab(self._adjust_tab(), "Contrast")
-        tabs.addTab(self._model_test_tab(), "Test Models")
-        tabs.addTab(self._train_tab(), "Train")
+        self._test_tab_widget = self._model_test_tab()
+        tabs.addTab(self._test_tab_widget, "Test Models")
+        self._train_tab_widget = self._train_tab()
+        tabs.addTab(self._train_tab_widget, "Train")
         tabs.addTab(self._help_tab(), "Instructions")
+        self.tabs = tabs
         return tabs
 
 
@@ -1264,7 +1267,7 @@ class MainWindow(QMainWindow):
         lines.append("")
         if weights and Path(weights).exists():
             lines.append(f"Best weights: {weights}")
-            lines.append("Use 'Use trained' under Evaluate and promote to score/promote it.")
+            lines.append("Use the buttons below to make this the active model or continue training from it.")
         elif weights:
             lines.append(f"Best weights (expected): {weights}")
         if run_dir:
@@ -1275,8 +1278,92 @@ class MainWindow(QMainWindow):
         box.setIcon(QMessageBox.Information if (exit_code == 0 and not stopped) else QMessageBox.Warning)
         box.setText(headline)
         box.setInformativeText("\n".join(lines[2:]))  # body after the headline + blank
-        box.setStandardButtons(QMessageBox.Ok)
+
+        # One-click follow-ups when best.pt actually exists: skip the manual
+        # copy-the-path dance between the Train, Test, and Evaluate tabs.
+        have_weights = bool(weights and Path(weights).exists())
+        last_weights = (Path(run_dir) / "weights" / "last.pt") if run_dir else None
+        can_resume = bool(stopped and last_weights and last_weights.exists())
+        use_btn = train_more_btn = resume_btn = None
+        if have_weights:
+            use_btn = box.addButton("Use as active model", QMessageBox.AcceptRole)
+            if can_resume:
+                # Interrupted run: Ultralytics can resume last.pt to its original
+                # epoch target. (A completed run cannot be resumed.)
+                resume_btn = box.addButton("Resume training", QMessageBox.ActionRole)
+            else:
+                # Completed run: continue from best.pt as a fresh fine-tune run.
+                train_more_btn = box.addButton("Train more from best.pt", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Ok)
         box.exec()
+
+        clicked = box.clickedButton()
+        if have_weights and clicked is use_btn:
+            self._use_trained_as_active(Path(weights))
+        elif can_resume and clicked is resume_btn:
+            self._resume_training_from(last_weights)
+        elif have_weights and clicked is train_more_btn:
+            self._finetune_training_from(Path(weights))
+
+    def _use_trained_as_active(self, weights: Path) -> None:
+        """Make a finished run's best.pt the active model for Test/Auto-label/etc."""
+        if hasattr(self, "test_model_edit"):
+            self.test_model_edit.setText(str(weights))
+        if hasattr(self, "eval_model_edit"):
+            self.eval_model_edit.setText(str(weights))
+        if hasattr(self, "_test_tab_widget") and hasattr(self, "tabs"):
+            self.tabs.setCurrentWidget(self._test_tab_widget)
+        self.status.showMessage(
+            f"Active model set to {weights.name}. Used by Test, Auto-label, Count, Pre-label, and the review queue.",
+            8000,
+        )
+
+    def _resume_training_from(self, weights: Path) -> None:
+        """Pre-fill the Train tab to resume an interrupted run from its last.pt.
+
+        resume=True tells Ultralytics to continue the same run to its original
+        epoch target; the model field carries the last.pt checkpoint.
+        """
+        if hasattr(self, "train_model_edit"):
+            self.train_model_edit.setText(str(weights))
+        if hasattr(self, "train_resume_check"):
+            self.train_resume_check.setChecked(True)
+        if hasattr(self, "_train_tab_widget") and hasattr(self, "tabs"):
+            self.tabs.setCurrentWidget(self._train_tab_widget)
+        self.status.showMessage(
+            f"Train tab ready to resume from {weights.name}. Review settings, then Start Training.",
+            8000,
+        )
+
+    def _finetune_training_from(self, weights: Path) -> None:
+        """Pre-fill the Train tab to fine-tune from a completed run's best.pt.
+
+        This starts a fresh run initialized from best.pt (resume stays off, since
+        a finished run cannot be resumed). The run name is bumped so the new run
+        does not collide with the original output folder.
+        """
+        if hasattr(self, "train_model_edit"):
+            self.train_model_edit.setText(str(weights))
+        if hasattr(self, "train_resume_check"):
+            self.train_resume_check.setChecked(False)
+        if hasattr(self, "train_name_edit"):
+            self.train_name_edit.setText(self._next_run_name(self.train_name_edit.text().strip()))
+        if hasattr(self, "_train_tab_widget") and hasattr(self, "tabs"):
+            self.tabs.setCurrentWidget(self._train_tab_widget)
+        self.status.showMessage(
+            f"Train tab ready to fine-tune from {weights.name} as a new run. Adjust epochs, then Start Training.",
+            8000,
+        )
+
+    @staticmethod
+    def _next_run_name(name: str) -> str:
+        """Bump a trailing -N suffix so a fine-tune run gets a fresh folder."""
+        name = name or "bungvision"
+        import re
+        m = re.search(r"^(.*?)(?:[-_]ft(\d+))?$", name)
+        base = m.group(1) if m else name
+        n = int(m.group(2)) + 1 if (m and m.group(2)) else 2
+        return f"{base}-ft{n}"
 
     def stop_training(self) -> None:
         if self._train_process is None:
