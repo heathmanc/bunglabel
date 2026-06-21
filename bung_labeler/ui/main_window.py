@@ -17,8 +17,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 import numpy as np
 
 import cv2
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QAction, QKeySequence, QIntValidator
+from PySide6.QtCore import QTimer, Qt, QProcess
+from PySide6.QtGui import QAction, QKeySequence, QIntValidator, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -68,6 +68,8 @@ from bung_labeler.core.storage import (
     save_class_config,
     class_names_from_config,
     infer_role_and_layout,
+    load_training_settings,
+    save_training_settings,
 )
 from bung_labeler.core.yolo_export import export_recipe_yolo, export_all_recipes_yolo, export_recipe_obb, export_all_recipes_obb
 from bung_labeler.core import review as review_logic
@@ -75,6 +77,7 @@ from bung_labeler.core import geometry as geom
 from bung_labeler.core import export_report
 from bung_labeler.core import relabel as relabel_logic
 from bung_labeler.core import active_learning
+from bung_labeler.core import training as training_logic
 from bung_labeler.version import APP_TITLE
 from bung_labeler.ui.canvas import ImageCanvas
 
@@ -322,9 +325,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._capture_tab(), "Live Capture")
         tabs.addTab(self._adjust_tab(), "Contrast")
         tabs.addTab(self._model_test_tab(), "Test Models")
+        tabs.addTab(self._train_tab(), "Train")
         tabs.addTab(self._help_tab(), "Instructions")
-        # Training, TensorRT, and live inference are intentionally hidden in this
-        # labeling-only build. Use Docker later after the dataset is ready.
         return tabs
 
 
@@ -441,6 +443,243 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.test_results_text)
         layout.addStretch(1)
         return w
+
+    def _train_tab(self) -> QWidget:
+        """Launch Ultralytics YOLO training on an exported dataset as a subprocess.
+
+        Training runs via the `yolo` CLI in a QProcess so the UI stays responsive
+        and the run is cancelable; stdout streams into the log below.
+        """
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        title = QLabel("Train a YOLO model")
+        title.setStyleSheet("font-size: 10pt; font-weight: 700; color: #bfdbfe;")
+        layout.addWidget(title)
+
+        help_text = QLabel(
+            "Export a reviewed dataset first, then point Data YAML at its data.yaml. "
+            "Training runs the Ultralytics 'yolo' command in the background."
+        )
+        help_text.setWordWrap(True)
+        layout.addWidget(help_text)
+
+        saved = load_training_settings()
+        params = training_logic.default_params()
+        params.update({k: saved[k] for k in params if k in saved})
+
+        files_box = QGroupBox("Dataset and model")
+        files = QVBoxLayout(files_box)
+
+        self.train_model_edit = QLineEdit(str(params["model"]))
+        self.train_model_edit.setPlaceholderText("yolo11s-obb.pt or path to a .pt checkpoint")
+        model_browse = QPushButton("Model...")
+        model_browse.clicked.connect(self.browse_train_model)
+        r = QHBoxLayout(); r.addWidget(self.train_model_edit); r.addWidget(model_browse)
+        files.addWidget(QLabel("Base model")); files.addLayout(r)
+
+        self.train_data_edit = QLineEdit(str(params["data"]))
+        self.train_data_edit.setPlaceholderText("data/exports/<name>/data.yaml")
+        data_browse = QPushButton("YAML...")
+        data_browse.clicked.connect(self.browse_train_data)
+        data_latest = QPushButton("Latest export")
+        data_latest.setToolTip("Fill in the most recently created export's data.yaml.")
+        data_latest.clicked.connect(self.use_latest_export_for_training)
+        r = QHBoxLayout(); r.addWidget(self.train_data_edit); r.addWidget(data_browse); r.addWidget(data_latest)
+        files.addWidget(QLabel("Data YAML")); files.addLayout(r)
+        layout.addWidget(files_box)
+
+        params_box = QGroupBox("Training parameters")
+        form = QFormLayout(params_box)
+
+        self.train_task_combo = QComboBox()
+        self.train_task_combo.addItems(list(training_logic.VALID_TASKS))
+        if str(params["task"]) in training_logic.VALID_TASKS:
+            self.train_task_combo.setCurrentText(str(params["task"]))
+        form.addRow("Task", self.train_task_combo)
+
+        self.train_imgsz_spin = QSpinBox(); self.train_imgsz_spin.setRange(32, 8192)
+        self.train_imgsz_spin.setSingleStep(32); self.train_imgsz_spin.setValue(int(params["imgsz"]))
+        form.addRow("Image size", self.train_imgsz_spin)
+
+        self.train_batch_spin = QSpinBox(); self.train_batch_spin.setRange(-1, 1024)
+        self.train_batch_spin.setValue(int(params["batch"]))
+        self.train_batch_spin.setToolTip("-1 lets Ultralytics auto-pick the batch size for your GPU.")
+        form.addRow("Batch (-1 = auto)", self.train_batch_spin)
+
+        self.train_epochs_spin = QSpinBox(); self.train_epochs_spin.setRange(1, 100000)
+        self.train_epochs_spin.setValue(int(params["epochs"]))
+        form.addRow("Epochs", self.train_epochs_spin)
+
+        self.train_patience_spin = QSpinBox(); self.train_patience_spin.setRange(0, 100000)
+        self.train_patience_spin.setValue(int(params["patience"]))
+        form.addRow("Patience", self.train_patience_spin)
+
+        self.train_workers_spin = QSpinBox(); self.train_workers_spin.setRange(0, 256)
+        self.train_workers_spin.setValue(int(params["workers"]))
+        form.addRow("Workers", self.train_workers_spin)
+
+        self.train_device_edit = QLineEdit(str(params["device"]))
+        self.train_device_edit.setPlaceholderText("0, cpu, cuda:0")
+        form.addRow("Device", self.train_device_edit)
+
+        self.train_project_edit = QLineEdit(str(params["project"]))
+        project_browse = QPushButton("Folder...")
+        project_browse.clicked.connect(self.browse_train_project)
+        r = QHBoxLayout(); r.addWidget(self.train_project_edit); r.addWidget(project_browse)
+        form.addRow("Output folder", r)
+
+        self.train_name_edit = QLineEdit(str(params["name"]))
+        form.addRow("Run name", self.train_name_edit)
+
+        self.train_resume_check = QCheckBox("Resume from last checkpoint")
+        self.train_resume_check.setChecked(bool(params.get("resume", False)))
+        form.addRow("Resume", self.train_resume_check)
+
+        self.train_yolo_exe_edit = QLineEdit(str(saved.get("yolo_exe", "yolo")))
+        self.train_yolo_exe_edit.setToolTip("Ultralytics CLI entrypoint. Use a full path if 'yolo' is not on PATH.")
+        form.addRow("yolo executable", self.train_yolo_exe_edit)
+        layout.addWidget(params_box)
+
+        btn_row = QHBoxLayout()
+        self.train_start_btn = QPushButton("Start Training")
+        self.train_start_btn.clicked.connect(self.start_training)
+        self.train_stop_btn = QPushButton("Stop")
+        self.train_stop_btn.setEnabled(False)
+        self.train_stop_btn.clicked.connect(self.stop_training)
+        btn_row.addWidget(self.train_start_btn); btn_row.addWidget(self.train_stop_btn)
+        layout.addLayout(btn_row)
+
+        self.train_log = QTextEdit()
+        self.train_log.setReadOnly(True)
+        self.train_log.setMinimumHeight(180)
+        self.train_log.setPlaceholderText("Training output appears here.")
+        layout.addWidget(self.train_log)
+        layout.addStretch(1)
+
+        self._train_process = None
+        return w
+
+    def _gather_train_params(self) -> dict:
+        return {
+            "task": self.train_task_combo.currentText(),
+            "model": self.train_model_edit.text().strip(),
+            "data": self.train_data_edit.text().strip(),
+            "imgsz": int(self.train_imgsz_spin.value()),
+            "batch": int(self.train_batch_spin.value()),
+            "epochs": int(self.train_epochs_spin.value()),
+            "patience": int(self.train_patience_spin.value()),
+            "workers": int(self.train_workers_spin.value()),
+            "device": self.train_device_edit.text().strip(),
+            "project": self.train_project_edit.text().strip(),
+            "name": self.train_name_edit.text().strip(),
+            "resume": bool(self.train_resume_check.isChecked()),
+        }
+
+    def browse_train_model(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select base model", "", "Model (*.pt *.yaml);;All files (*)")
+        if path:
+            self.train_model_edit.setText(path)
+
+    def browse_train_data(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select data.yaml", str(EXPORT_DIR), "YAML (*.yaml *.yml);;All files (*)")
+        if path:
+            self.train_data_edit.setText(path)
+
+    def browse_train_project(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select output folder", self.train_project_edit.text().strip() or str(DATA_DIR))
+        if path:
+            self.train_project_edit.setText(path)
+
+    def use_latest_export_for_training(self) -> None:
+        candidates = [p / "data.yaml" for p in EXPORT_DIR.glob("*") if (p / "data.yaml").exists()]
+        if not candidates:
+            QMessageBox.information(self, "Train", "No exports found. Export a reviewed dataset first.")
+            return
+        latest = max(candidates, key=lambda p: p.stat().st_mtime)
+        self.train_data_edit.setText(str(latest))
+        # If the export recorded its task, match the training task to it.
+        task_file = latest.parent / "task.txt"
+        if task_file.exists():
+            try:
+                task = task_file.read_text(encoding="utf-8").strip().lower()
+                if task in training_logic.VALID_TASKS:
+                    self.train_task_combo.setCurrentText(task)
+            except Exception:
+                pass
+        self.status.showMessage(f"Using dataset: {latest}", 6000)
+
+    def start_training(self) -> None:
+        if self._train_process is not None:
+            QMessageBox.information(self, "Train", "A training run is already in progress.")
+            return
+        params = self._gather_train_params()
+        errors = training_logic.validate_train_params(params)
+        if errors:
+            QMessageBox.warning(self, "Train", "Cannot start training:\n\n" + "\n".join(f"• {e}" for e in errors))
+            return
+
+        yolo_exe = self.train_yolo_exe_edit.text().strip() or "yolo"
+        cmd = training_logic.build_train_command(yolo_exe, params)
+
+        # Persist for next session.
+        settings = dict(params)
+        settings["yolo_exe"] = yolo_exe
+        try:
+            save_training_settings(settings)
+        except Exception:
+            pass
+
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.MergedChannels)
+        proc.setWorkingDirectory(str(DATA_DIR.parent))
+        proc.readyReadStandardOutput.connect(self._on_train_stdout)
+        proc.finished.connect(self._on_train_finished)
+        proc.errorOccurred.connect(self._on_train_error)
+        self._train_process = proc
+
+        self.train_log.clear()
+        self.train_log.append("$ " + " ".join(cmd) + "\n")
+        self.train_start_btn.setEnabled(False)
+        self.train_stop_btn.setEnabled(True)
+        self.status.showMessage("Training started...", 5000)
+        proc.start(cmd[0], cmd[1:])
+
+    def _on_train_stdout(self) -> None:
+        if self._train_process is None:
+            return
+        data = bytes(self._train_process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        if data:
+            self.train_log.moveCursor(QTextCursor.End)
+            self.train_log.insertPlainText(data)
+            self.train_log.moveCursor(QTextCursor.End)
+
+    def _on_train_error(self, _error) -> None:
+        if self._train_process is None:
+            return
+        self.train_log.append(
+            f"\n[error] Could not run '{self.train_yolo_exe_edit.text().strip() or 'yolo'}'. "
+            "Check that Ultralytics is installed and the yolo executable is correct."
+        )
+
+    def _on_train_finished(self, exit_code: int, _status) -> None:
+        self.train_log.append(f"\n[done] Training process exited with code {exit_code}.")
+        if exit_code == 0:
+            params = self._gather_train_params()
+            weights = Path(params["project"]) / params["name"] / "weights" / "best.pt"
+            self.train_log.append(f"[done] Best weights (if produced): {weights}")
+            self.status.showMessage("Training finished.", 8000)
+        else:
+            self.status.showMessage(f"Training exited with code {exit_code}.", 8000)
+        self.train_start_btn.setEnabled(True)
+        self.train_stop_btn.setEnabled(False)
+        self._train_process = None
+
+    def stop_training(self) -> None:
+        if self._train_process is None:
+            return
+        self.train_log.append("\n[stop] Stopping training...")
+        self._train_process.kill()
 
     def _help_tab(self) -> QWidget:
         w = QWidget()

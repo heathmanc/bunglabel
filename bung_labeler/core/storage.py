@@ -17,6 +17,7 @@ RECIPE_DIR = DATA_DIR / "recipes"
 EXPORT_DIR = DATA_DIR / "exports"
 CLASS_CONFIG_PATH = DATA_DIR / "class_config.json"
 CAMERA_SETTINGS_PATH = DATA_DIR / "camera_settings.json"
+TRAINING_SETTINGS_PATH = DATA_DIR / "training_settings.json"
 
 for d in (CAPTURE_DIR, LABEL_DIR, RECIPE_DIR, EXPORT_DIR):
     d.mkdir(parents=True, exist_ok=True)
@@ -145,6 +146,23 @@ def save_camera_settings(settings: dict[str, Any]) -> Path:
     payload.update({k: settings[k] for k in payload if k in settings})
     CAMERA_SETTINGS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return CAMERA_SETTINGS_PATH
+
+
+def load_training_settings() -> dict[str, Any]:
+    """Last-used YOLO training parameters, persisted between sessions."""
+    if TRAINING_SETTINGS_PATH.exists():
+        try:
+            data = json.loads(TRAINING_SETTINGS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+
+def save_training_settings(settings: dict[str, Any]) -> Path:
+    TRAINING_SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    return TRAINING_SETTINGS_PATH
 
 
 @dataclass
