@@ -97,11 +97,11 @@ from bung_labeler.ui.canvas import ImageCanvas
 
 
 class TrainingMetricsChart(QWidget):
-    """Lightweight multi-series line chart for live training metrics.
+    """Multi-series line chart for live training metrics with numbered axes.
 
-    Each series is normalized to its own min/max so the *shape* (is loss going
-    down, is mAP going up) is readable even though losses and mAP live on
-    different scales. The legend shows each series' latest raw value.
+    Losses and mAP share one autoscaled Y axis (both sit in a roughly 0-3 band),
+    so the Y axis can carry real numbers; the X axis is the epoch number. The
+    legend shows each series' latest value.
     """
 
     _COLORS = {
@@ -111,66 +111,141 @@ class TrainingMetricsChart(QWidget):
         "mAP50-95": "#60a5fa",
     }
     _DEFAULT = "#cbd5e1"
+    _AXIS = "#475569"
+    _GRID = "#1e293b"
+    _TEXT = "#94a3b8"
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._epochs: list[float] = []
         self._series: dict[str, list[float]] = {}
-        self.setMinimumHeight(160)
+        self.setMinimumHeight(200)
         self.setToolTip(
             "Live training curves from results.csv. Losses should trend down; "
-            "mAP should trend up. Each line is scaled to its own range."
+            "mAP should trend up. X axis is the epoch number."
         )
 
-    def set_series(self, series: dict[str, list[float]]) -> None:
+    def set_data(self, epochs: list[float], series: dict[str, list[float]]) -> None:
         self._series = {k: list(v) for k, v in (series or {}).items() if v}
+        # Fall back to 1..N if the epoch column was missing.
+        n = max((len(v) for v in self._series.values()), default=0)
+        if epochs and len(epochs) >= n:
+            self._epochs = [float(e) for e in epochs[:n]]
+        else:
+            self._epochs = [float(i + 1) for i in range(n)]
         self.update()
 
     def clear(self) -> None:
+        self._epochs = []
         self._series = {}
         self.update()
+
+    @staticmethod
+    def _fmt(v: float) -> str:
+        if abs(v) >= 100:
+            return f"{v:.0f}"
+        if abs(v) >= 1:
+            return f"{v:.2f}"
+        return f"{v:.3f}"
 
     def paintEvent(self, _event) -> None:  # noqa: N802 (Qt signature)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        rect = self.rect().adjusted(8, 8, -8, -8)
-        p.fillRect(self.rect(), QColor("#0b1220"))
-        p.setPen(QPen(QColor("#1e293b"), 1))
-        p.drawRect(rect)
+        full = self.rect()
+        p.fillRect(full, QColor("#0b1220"))
 
         if not self._series:
             p.setPen(QColor(self._DEFAULT))
-            p.drawText(rect, Qt.AlignCenter, "Training curves appear here once epochs complete.")
+            p.drawText(full, Qt.AlignCenter, "Training curves appear here once epochs complete.")
             p.end()
             return
 
-        plot = QRectF(rect.left() + 6, rect.top() + 6, rect.width() - 12, rect.height() - 28)
-        max_len = max(len(v) for v in self._series.values())
+        fm = p.fontMetrics()
+        # Margins: room for y labels (left), x labels (bottom), legend (top).
+        left = 52
+        right = 12
+        top = 22
+        bottom = 24
+        plot = QRectF(
+            full.left() + left, full.top() + top,
+            max(1, full.width() - left - right),
+            max(1, full.height() - top - bottom),
+        )
+
+        # Shared Y range across all series, padded slightly; always include 0.
+        all_vals = [v for s in self._series.values() for v in s]
+        ymin = min(0.0, min(all_vals))
+        ymax = max(all_vals)
+        if ymax <= ymin:
+            ymax = ymin + 1.0
+        pad = (ymax - ymin) * 0.05
+        ymin -= pad if ymin < 0 else 0.0
+        ymax += pad
+
+        # X range from epoch numbers.
+        emin = self._epochs[0] if self._epochs else 1.0
+        emax = self._epochs[-1] if self._epochs else 1.0
+        if emax <= emin:
+            emax = emin + 1.0
+
+        def px(epoch: float) -> float:
+            return plot.left() + (epoch - emin) / (emax - emin) * plot.width()
+
+        def py(val: float) -> float:
+            return plot.bottom() - (val - ymin) / (ymax - ymin) * plot.height()
+
+        # --- Y axis ticks + gridlines ---
+        p.setPen(QPen(QColor(self._TEXT)))
+        y_ticks = 5
+        for i in range(y_ticks + 1):
+            val = ymin + (ymax - ymin) * i / y_ticks
+            y = py(val)
+            p.setPen(QPen(QColor(self._GRID), 1))
+            p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+            p.setPen(QColor(self._TEXT))
+            label = self._fmt(val)
+            p.drawText(QRectF(full.left(), y - 8, left - 6, 16),
+                       Qt.AlignRight | Qt.AlignVCenter, label)
+
+        # --- X axis ticks (epoch numbers) ---
+        n_epochs = len(self._epochs)
+        x_ticks = min(6, n_epochs) if n_epochs > 1 else 1
+        for i in range(x_ticks):
+            frac = i / (x_ticks - 1) if x_ticks > 1 else 0.0
+            epoch = emin + (emax - emin) * frac
+            x = px(epoch)
+            p.setPen(QColor(self._TEXT))
+            p.drawText(QRectF(x - 24, plot.bottom() + 4, 48, 16),
+                       Qt.AlignCenter, str(int(round(epoch))))
+
+        # Axis lines.
+        p.setPen(QPen(QColor(self._AXIS), 1))
+        p.drawLine(QPointF(plot.left(), plot.top()), QPointF(plot.left(), plot.bottom()))
+        p.drawLine(QPointF(plot.left(), plot.bottom()), QPointF(plot.right(), plot.bottom()))
+        # X axis caption.
+        p.setPen(QColor(self._TEXT))
+        p.drawText(QRectF(plot.left(), full.bottom() - 14, plot.width(), 14),
+                   Qt.AlignRight | Qt.AlignVCenter, "epoch")
+
+        # --- Series lines ---
         legend_x = plot.left()
-        legend_y = rect.bottom() - 6
+        legend_y = full.top() + 14
         for name, values in self._series.items():
             color = QColor(self._COLORS.get(name, self._DEFAULT))
-            lo, hi = min(values), max(values)
-            span = (hi - lo) or 1.0
-            n = len(values)
             p.setPen(QPen(color, 2))
-            if n == 1:
-                y = plot.bottom() - ((values[0] - lo) / span) * plot.height()
-                p.drawPoint(QPointF(plot.left(), y))
-            else:
-                step = plot.width() / max(1, (max_len - 1))
-                prev = None
-                for i, val in enumerate(values):
-                    x = plot.left() + i * step
-                    y = plot.bottom() - ((val - lo) / span) * plot.height()
-                    pt = QPointF(x, y)
-                    if prev is not None:
-                        p.drawLine(prev, pt)
-                    prev = pt
-            # Legend entry with latest raw value.
-            label = f"{name} {values[-1]:.3g}"
+            prev = None
+            for i, val in enumerate(values):
+                epoch = self._epochs[i] if i < len(self._epochs) else float(i + 1)
+                pt = QPointF(px(epoch), py(val))
+                if prev is not None:
+                    p.drawLine(prev, pt)
+                else:
+                    p.drawEllipse(pt, 2, 2)
+                prev = pt
+            label = f"{name} {self._fmt(values[-1])}"
             p.setPen(color)
             p.drawText(QPointF(legend_x, legend_y), label)
-            legend_x += p.fontMetrics().horizontalAdvance(label) + 16
+            legend_x += fm.horizontalAdvance(label) + 16
         p.end()
 
 
@@ -937,13 +1012,16 @@ class MainWindow(QMainWindow):
         if hasattr(self, "train_metrics_chart"):
             self.train_metrics_chart.clear()
 
-        # Track the expected results.csv path.  YOLO appends a numeric suffix
-        # (bungvision2, bungvision3 ...) when the run directory already exists.
-        # _results_csv_path starts as the bare name; _on_train_stdout detects the
-        # real save-dir line and updates it so the chart polls the right file.
+        # Determine which results.csv to follow.  YOLO creates a NEW directory
+        # when <project>/<name> already exists (bungvision -> bungvision2 or
+        # bungvision-2 depending on version), so we cannot trust the bare path:
+        # the base dir's results.csv is stale.  Instead we record the start time
+        # and, while polling, lock onto whichever <name>* results.csv was written
+        # AFTER training started.
         self._train_project = params.get("project") or "data/training"
         self._train_name = params.get("name") or "bungvision"
-        self._results_csv_path = Path(self._train_project) / self._train_name / "results.csv"
+        self._train_start_time = time.time()
+        self._results_csv_path = None  # resolved on first successful poll
 
         if hasattr(self, "_metrics_timer"):
             self._metrics_timer.stop()
@@ -951,41 +1029,54 @@ class MainWindow(QMainWindow):
 
         proc.start(cmd[0], cmd[1:])
 
-    def _poll_training_metrics(self) -> None:
-        """Re-read the active run's results.csv and refresh the live chart.
+    def _resolve_results_csv(self) -> Path | None:
+        """Find the results.csv for the active run.
 
-        When the expected path doesn't exist yet we scan for YOLO-appended
-        numeric siblings (bungvision2, bungvision3 ...) with the most recent
-        mtime so repeated runs without renaming still get live curves.
+        Once locked, keep using it.  Otherwise scan <project>/<name>* for a
+        results.csv modified at/after training start — that excludes the stale
+        base-directory file from a previous run and picks the freshly created
+        numbered directory (bungvision2 / bungvision-2 / ...).
         """
+        path = getattr(self, "_results_csv_path", None)
+        if path is not None and Path(path).exists():
+            return Path(path)
+        project = getattr(self, "_train_project", None)
+        name = getattr(self, "_train_name", None)
+        if not project or not name:
+            return None
+        import glob as _glob
+        start = getattr(self, "_train_start_time", 0.0)
+        pattern = str(Path(project) / f"{name}*" / "results.csv")
+        fresh = []
+        for p in _glob.glob(pattern):
+            pp = Path(p)
+            try:
+                if pp.exists() and pp.stat().st_mtime >= start - 1.0:
+                    fresh.append(pp)
+            except OSError:
+                continue
+        if not fresh:
+            return None
+        chosen = max(fresh, key=lambda p: p.stat().st_mtime)
+        self._results_csv_path = chosen
+        return chosen
+
+    def _poll_training_metrics(self) -> None:
+        """Re-read the active run's results.csv and refresh the live chart."""
         if not hasattr(self, "train_metrics_chart"):
             return
-        path = getattr(self, "_results_csv_path", None)
+        path = self._resolve_results_csv()
         if path is None:
             return
-        path = Path(path)
-        if not path.exists():
-            # Try numbered siblings: project/name2, name3, ... → pick newest.
-            project = getattr(self, "_train_project", None)
-            name = getattr(self, "_train_name", None)
-            if project and name:
-                import glob as _glob
-                pattern = str(Path(project) / f"{name}*" / "results.csv")
-                candidates = [Path(p) for p in _glob.glob(pattern) if Path(p).exists()]
-                if candidates:
-                    path = max(candidates, key=lambda p: p.stat().st_mtime)
-                    self._results_csv_path = path
-                else:
-                    return
-            else:
-                return
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             return
         rows = training_logic.parse_results_csv(text)
         if rows:
-            self.train_metrics_chart.set_series(training_logic.chart_series(rows))
+            epochs = training_logic.metric_series(rows, "epoch")
+            series = training_logic.chart_series(rows)
+            self.train_metrics_chart.set_data(epochs, series)
 
     def _on_train_stdout(self) -> None:
         if self._train_process is None:
