@@ -5,6 +5,7 @@ import traceback
 import time
 import math
 import json
+import csv
 from pathlib import Path
 
 # Allow this file to be launched directly during troubleshooting, e.g.
@@ -1738,6 +1739,8 @@ class MainWindow(QMainWindow):
         finally:
             self.image_list.setUpdatesEnabled(True)
         self._set_dataset_summary_label(totals)
+        # Keep the row for the image being edited highlighted across list rebuilds.
+        self._select_image_in_list()
 
     def _on_camera_backend_changed(self, backend: str) -> None:
         is_basler = backend == "Basler/Pylon"
@@ -2628,7 +2631,31 @@ class MainWindow(QMainWindow):
         if hasattr(self.canvas, "set_annotation_visibility"):
             self.canvas.set_annotation_visibility(True)
         self._model_test_overlay_active = False
+        self._select_image_in_list(path)
         self.status.showMessage(f"Loaded image: {path.name}", 5000)
+
+    def _select_image_in_list(self, path: Path | None = None) -> None:
+        """Highlight the row for the given (or current) image in the captured-images
+        list so the operator can always see which file is being edited."""
+        if path is None:
+            path = self.current_image_path
+        if not path or not hasattr(self, "image_list"):
+            return
+        target = Path(path).name
+        list_widget = self.image_list
+        blocked = list_widget.blockSignals(True)
+        try:
+            for i in range(list_widget.count()):
+                item = list_widget.item(i)
+                if self._image_name_from_list_item(item.text()) == target:
+                    list_widget.setCurrentRow(i)
+                    list_widget.scrollToItem(item)
+                    return
+            # The current image is filtered out of the view (e.g. review-only
+            # filter); drop any stale highlight rather than point at a different file.
+            list_widget.setCurrentRow(-1)
+        finally:
+            list_widget.blockSignals(blocked)
 
 
     def _image_name_from_list_item(self, text: str) -> str:
@@ -3189,6 +3216,94 @@ class MainWindow(QMainWindow):
         # Reviewed-only export is intentionally hardcoded. There is no UI option to include unreviewed imports.
         return True
 
+    def _export_count_summary(self, out: Path) -> str:
+        """Build an operator-readable breakdown of what was actually written to a
+        dataset by reading its manifest.csv. Shows image counts per split/recipe,
+        object totals (battery/bung/retainer), and the exported class list so the
+        operator can confirm the export matches expectations before training."""
+        manifest = out / "manifest.csv"
+        if not manifest.exists():
+            return "No manifest.csv was written; cannot summarize export counts."
+        try:
+            rows = list(csv.DictReader(manifest.read_text(encoding="utf-8").splitlines()))
+        except Exception as exc:
+            return f"Could not read manifest.csv: {exc}"
+        if not rows:
+            return "No labeled images were written to this dataset."
+
+        # The detect exporter names its per-image label column box_count, the OBB
+        # exporter uses obb_count. Accept either.
+        label_key = "obb_count" if "obb_count" in rows[0] else "box_count"
+
+        def _int(row: dict, key: str) -> int:
+            try:
+                return int(row.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        split_images = {"train": 0, "val": 0}
+        per_recipe: dict[str, int] = {}
+        totals = {"labels": 0, "battery": 0, "bung": 0, "retainer": 0}
+        empty_images = 0
+        for row in rows:
+            split = str(row.get("split", "")).strip()
+            if split in split_images:
+                split_images[split] += 1
+            recipe = str(row.get("recipe", "")).strip() or "(unknown)"
+            per_recipe[recipe] = per_recipe.get(recipe, 0) + 1
+            n_labels = _int(row, label_key)
+            totals["labels"] += n_labels
+            totals["battery"] += _int(row, "battery_count")
+            totals["bung"] += _int(row, "bung_count")
+            totals["retainer"] += _int(row, "retainer_count")
+            if n_labels == 0:
+                empty_images += 1
+
+        total_images = len(rows)
+        lines = [
+            f"Images written: {total_images}  (train {split_images['train']}, val {split_images['val']})",
+            f"Labels written: {totals['labels']}",
+            f"  Batteries: {totals['battery']}",
+            f"  Bungs:     {totals['bung']}",
+            f"  Retainers: {totals['retainer']}",
+        ]
+        if empty_images:
+            lines.append(f"Images with no usable labels: {empty_images}")
+        if len(per_recipe) > 1:
+            lines.append("Images per recipe:")
+            for recipe in sorted(per_recipe):
+                lines.append(f"  {recipe}: {per_recipe[recipe]}")
+
+        classes = self._export_class_names(out)
+        if classes:
+            lines.append(f"Classes ({len(classes)}): " + ", ".join(classes))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _export_class_names(out: Path) -> list[str]:
+        """Read the ordered class names from a dataset's data.yaml names: block."""
+        data_yaml = out / "data.yaml"
+        if not data_yaml.exists():
+            return []
+        names: list[str] = []
+        in_names = False
+        try:
+            for raw in data_yaml.read_text(encoding="utf-8").splitlines():
+                if raw.strip() == "names:":
+                    in_names = True
+                    continue
+                if in_names:
+                    stripped = raw.strip()
+                    if not raw.startswith(" ") or not stripped:
+                        break
+                    # Lines look like "  0: battery_model".
+                    _, _, name = stripped.partition(":")
+                    if name.strip():
+                        names.append(name.strip())
+        except Exception:
+            return names
+        return names
+
     def export_yolo(self) -> None:
         self.save_recipe_from_ui()
         mode = self._export_mode()
@@ -3205,10 +3320,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Export", str(e))
             return
         data_yaml = out / "data.yaml"
+        summary = self._export_count_summary(out)
         QMessageBox.information(
             self,
             "Export complete",
-            f"YOLO dataset exported to:\n{out}\n\nTraining file:\n{data_yaml}\n\nTask:\n{task}\nClass mode:\n{mode}\nReview filter:\nreviewed only\n\nSuggested command:\n{train_hint}"
+            f"YOLO dataset exported to:\n{out}\n\nTraining file:\n{data_yaml}\n\n"
+            f"Export counts:\n{summary}\n\n"
+            f"Task:\n{task}\nClass mode:\n{mode}\nReview filter:\nreviewed only\n\nSuggested command:\n{train_hint}"
         )
         self.status.showMessage(f"Exported YOLO {task} dataset: {out}", 8000)
 
@@ -3228,10 +3346,13 @@ class MainWindow(QMainWindow):
             return
         data_yaml = out / "data.yaml"
         manifest = out / "manifest.csv"
+        summary = self._export_count_summary(out)
         QMessageBox.information(
             self,
             "Export All complete",
-            f"Combined YOLO dataset exported to:\n{out}\n\nTraining file:\n{data_yaml}\nManifest:\n{manifest}\n\nTask:\n{task}\nClass mode:\n{mode}\nReview filter:\nreviewed only"
+            f"Combined YOLO dataset exported to:\n{out}\n\nTraining file:\n{data_yaml}\nManifest:\n{manifest}\n\n"
+            f"Export counts:\n{summary}\n\n"
+            f"Task:\n{task}\nClass mode:\n{mode}\nReview filter:\nreviewed only"
         )
         self.status.showMessage(f"Exported combined YOLO {task} dataset: {out}", 8000)
 
