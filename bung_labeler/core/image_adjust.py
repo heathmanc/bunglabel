@@ -24,6 +24,18 @@ def apply_adjustments(
     if frame_bgr is None:
         raise ValueError("frame_bgr cannot be None")
 
+    # Fast path: when every control is at its no-op default, return the frame
+    # unchanged instead of running convertScaleAbs/LUT/copy on the live-preview
+    # tick. This is the common case while the operator is just viewing the feed.
+    if (
+        brightness == 0
+        and contrast == 0
+        and abs(float(gamma) - 1.0) <= 0.01
+        and not clahe_enabled
+        and sharpen <= 0
+    ):
+        return frame_bgr
+
     img = frame_bgr.copy()
 
     alpha = 1.0 + (contrast / 100.0)
