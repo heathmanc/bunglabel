@@ -34,7 +34,9 @@ def apply_adjustments(
         gamma = 1.0
     if abs(gamma - 1.0) > 0.01:
         inv_gamma = 1.0 / gamma
-        table = np.array([(i / 255.0) ** inv_gamma * 255 for i in range(256)], dtype=np.uint8)
+        # Vectorized 256-entry LUT. Avoids a per-frame Python loop over 256
+        # values on the live-preview path whenever gamma is active.
+        table = (((np.arange(256, dtype=np.float32) / 255.0) ** inv_gamma) * 255.0).astype(np.uint8)
         img = cv2.LUT(img, table)
 
     if clahe_enabled:
@@ -51,10 +53,3 @@ def apply_adjustments(
         img = cv2.addWeighted(img, 1.0 + amount, blurred, -amount, 0)
 
     return img
-
-
-def bgr_to_qimage_rgb_bytes(frame_bgr: np.ndarray) -> tuple[bytes, int, int, int]:
-    """Return RGB bytes and image dimensions for safe QImage creation."""
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    h, w, ch = rgb.shape
-    return rgb.tobytes(), w, h, ch * w

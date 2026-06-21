@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import importlib.util
 import traceback
 import time
 import math
@@ -18,8 +17,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 import numpy as np
 
 import cv2
-from PySide6.QtCore import QTimer, Qt, QProcess
-from PySide6.QtGui import QAction, QKeySequence, QTextCursor, QIntValidator
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QAction, QKeySequence, QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -45,7 +44,6 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QInputDialog,
     QScrollArea,
     QSizePolicy,
 )
@@ -89,6 +87,9 @@ class MainWindow(QMainWindow):
         self._preview_frame_counter = 0
         self._preview_fps_t0 = time.perf_counter()
         self._preview_fps = 0.0
+        # Last camera frame sequence processed by the display timer. Used to skip
+        # re-decoding/re-painting an unchanged frame (see _on_timer).
+        self._last_frame_seq = None
         self.last_raw = None
         self.last_adjusted = None
         self.current_image_path: Path | None = None
@@ -762,134 +763,6 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         return w
 
-
-    def _train_tab(self) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
-
-        export_box = QGroupBox("Dataset")
-        ex = QVBoxLayout(export_box)
-        export_btn = QPushButton("Export Current Recipe to YOLO")
-        export_btn.clicked.connect(self.export_yolo)
-        self.train_dataset_edit = QLineEdit()
-        self.train_dataset_edit.setPlaceholderText("Exported dataset data.yaml path")
-        browse_data = QPushButton("Browse data.yaml")
-        browse_data.clicked.connect(self.browse_train_dataset)
-        ex.addWidget(export_btn)
-        ex.addWidget(QLabel("Export first, then train from the generated data.yaml."))
-        ex.addWidget(self.train_dataset_edit)
-        ex.addWidget(browse_data)
-
-        train_box = QGroupBox("Local Ultralytics YOLO Training")
-        form = QFormLayout(train_box)
-        self.base_model_edit = QLineEdit("yolo11n-obb.pt")
-        self.epochs_spin = QSpinBox(); self.epochs_spin.setRange(1, 1000); self.epochs_spin.setValue(100)
-        self.imgsz_spin = QSpinBox(); self.imgsz_spin.setRange(320, 2048); self.imgsz_spin.setSingleStep(32); self.imgsz_spin.setValue(640)
-        self.batch_spin = QSpinBox(); self.batch_spin.setRange(-1, 128); self.batch_spin.setValue(8)
-        self.run_name_edit = QLineEdit("bungvision")
-        form.addRow("Base model", self.base_model_edit)
-        form.addRow("Epochs", self.epochs_spin)
-        form.addRow("Image size", self.imgsz_spin)
-        form.addRow("Batch", self.batch_spin)
-        form.addRow("Run name", self.run_name_edit)
-
-        trt_box = QGroupBox("TensorRT Export / Jetson Deploy")
-        trt_layout = QVBoxLayout(trt_box)
-        self.trt_source_model_edit = QLineEdit()
-        self.trt_source_model_edit.setPlaceholderText("best.pt to export, usually auto-filled after training")
-        browse_trt_src = QPushButton("Browse best.pt for TensorRT Export")
-        browse_trt_src.clicked.connect(self.browse_trt_source_model)
-        trt_form = QFormLayout()
-        self.trt_method_combo = QComboBox()
-        self.trt_method_combo.addItems([
-            "Native ONNX -> trtexec - recommended on Jetson",
-            "Ultralytics direct .engine - requires working PyTorch CUDA",
-        ])
-        self.trt_precision_combo = QComboBox()
-        self.trt_precision_combo.addItems(["FP16 / half=True - recommended on Jetson", "FP32 / half=False - compatibility"])
-        self.trt_imgsz_spin = QSpinBox(); self.trt_imgsz_spin.setRange(320, 2048); self.trt_imgsz_spin.setSingleStep(32); self.trt_imgsz_spin.setValue(640)
-        self.trt_workspace_spin = QSpinBox(); self.trt_workspace_spin.setRange(1, 64); self.trt_workspace_spin.setValue(4)
-        trt_form.addRow("Export method", self.trt_method_combo)
-        trt_form.addRow("TensorRT image size", self.trt_imgsz_spin)
-        trt_form.addRow("Precision", self.trt_precision_combo)
-        trt_form.addRow("Workspace GB", self.trt_workspace_spin)
-        self.trt_export_btn = QPushButton("Export TensorRT .engine")
-        self.trt_export_btn.clicked.connect(self.export_tensorrt_engine)
-        trt_layout.addWidget(QLabel("Build the .engine on the Jetson that will run inference. Native ONNX -> trtexec avoids PyTorch CUDA/sm_87 wheel issues."))
-        trt_layout.addWidget(self.trt_source_model_edit)
-        trt_layout.addWidget(browse_trt_src)
-        trt_layout.addLayout(trt_form)
-        trt_layout.addWidget(self.trt_export_btn)
-
-        row = QHBoxLayout()
-        start = QPushButton("Start Training")
-        start.clicked.connect(self.start_training)
-        stop = QPushButton("Stop Training")
-        stop.clicked.connect(self.stop_training)
-        row.addWidget(start); row.addWidget(stop)
-
-        self.train_log = QTextEdit()
-        self.train_log.setReadOnly(True)
-        self.train_log.setPlaceholderText("Training output will appear here. Install with: pip install ultralytics")
-
-        layout.addWidget(export_box)
-        layout.addWidget(train_box)
-        layout.addWidget(trt_box)
-        layout.addLayout(row)
-        layout.addWidget(self.train_log)
-        return w
-
-    def _detect_tab(self) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
-
-        model_box = QGroupBox("Model")
-        mv = QVBoxLayout(model_box)
-        self.model_path_edit = QLineEdit()
-        self.model_path_edit.setPlaceholderText("best.pt or TensorRT best.engine")
-        browse_model = QPushButton("Browse .pt / .engine")
-        browse_model.clicked.connect(self.browse_detect_model)
-        load_model = QPushButton("Load Model")
-        load_model.clicked.connect(self.load_detect_model)
-        mv.addWidget(self.model_path_edit)
-        mv.addWidget(browse_model)
-        mv.addWidget(load_model)
-
-        settings_box = QGroupBox("Detection Settings")
-        form = QFormLayout(settings_box)
-        self.conf_spin = QDoubleSpinBox(); self.conf_spin.setRange(0.05, 0.95); self.conf_spin.setSingleStep(0.05); self.conf_spin.setValue(0.35)
-        self.iou_spin = QDoubleSpinBox(); self.iou_spin.setRange(0.05, 0.95); self.iou_spin.setSingleStep(0.05); self.iou_spin.setValue(0.45)
-        self.detect_every_spin = QSpinBox(); self.detect_every_spin.setRange(1, 60); self.detect_every_spin.setValue(5)
-        form.addRow("Confidence", self.conf_spin)
-        form.addRow("IoU", self.iou_spin)
-        form.addRow("Detect every N frames", self.detect_every_spin)
-
-        self.live_detect_check = QCheckBox("Live detection enabled")
-        self.live_detect_check.stateChanged.connect(self._live_detection_checkbox_changed)
-
-        detect_once = QPushButton("Detect Once")
-        detect_once.clicked.connect(self.detect_current_frame)
-
-        self.start_live_detect_btn = QPushButton("Start Live Detection")
-        self.start_live_detect_btn.clicked.connect(self.toggle_live_detection)
-
-        apply_labels = QPushButton("Use Current Detections as Editable Labels")
-        apply_labels.clicked.connect(lambda: self.detect_current_frame(save_as_labels=True))
-        self.detect_status_label = QLabel(
-            "Load best.pt or best.engine, open live view, then click Start Live Detection. "
-            "Detect Once is only a single-frame test."
-        )
-        self.detect_status_label.setWordWrap(True)
-
-        layout.addWidget(model_box)
-        layout.addWidget(settings_box)
-        layout.addWidget(self.live_detect_check)
-        layout.addWidget(detect_once)
-        layout.addWidget(self.start_live_detect_btn)
-        layout.addWidget(apply_labels)
-        layout.addWidget(self.detect_status_label)
-        layout.addStretch()
-        return w
 
     def _right_panel(self) -> QWidget:
         w = QWidget()
@@ -1568,6 +1441,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "count_required_spin") and not self.count_required_spin.text().strip():
             self._set_int_line_value(self.count_required_spin, self._expected_bungs_value())
         self._update_box_count()
+        # Expected-count changes reclassify ready/problem images, so refresh the
+        # dataset summary explicitly now that _update_box_count no longer does.
+        self._update_dataset_summary()
 
     def _sync_required_count_from_text(self) -> None:
         if hasattr(self, "count_required_spin"):
@@ -1841,42 +1717,31 @@ class MainWindow(QMainWindow):
         self._image_status_cache[key] = entry
         return entry
 
-    def _image_list_prefix(self, path: Path, data: dict | None = None) -> str:
-        if data is None:
-            return self._cached_image_status(path).get("prefix", "")
-        json_path = image_label_json_path(path)
-        if json_path.exists() and data and data.get("boxes"):
-            batt, bung = self._image_counts_from_data(data)
-            expected = self.recipe.expected_bungs
-            if self._needs_review_for_image(path, data):
-                return f"🟡 REVIEW {batt}B/{bung}U  "
-            if self._annotation_force_reviewed(data):
-                return f"⚠ FORCE REVIEW {batt}B/{bung}U  "
-            return "✓ REVIEWED OK  " if batt == 1 and bung == expected else "⚠ REVIEWED CHECK  "
-        if json_path.exists():
-            return "◇ JSON EMPTY  "
-        return "□ NO JSON  "
-
     def _refresh_images(self, *args, force: bool = False) -> None:
         # Qt checkbox signals pass an int state; do not treat that as a force refresh.
         if args and isinstance(args[0], bool):
             force = force or bool(args[0])
 
+        review_only = bool(
+            hasattr(self, "show_unreviewed_only_check")
+            and self.show_unreviewed_only_check.isChecked()
+        )
+        # Build the visible list and tally the dataset summary in one pass. The
+        # summary counts every image in the recipe regardless of the review-only
+        # view filter, so it stays correct without a second walk of the cache.
+        totals = self._new_summary_totals()
         self.image_list.setUpdatesEnabled(False)
         try:
             self.image_list.clear()
-            review_only = bool(
-                hasattr(self, "show_unreviewed_only_check")
-                and self.show_unreviewed_only_check.isChecked()
-            )
             for p in self._get_recipe_image_paths(force=force):
                 entry = self._cached_image_status(p)
+                self._accumulate_summary(totals, entry)
                 if review_only and not entry.get("needs_review", False):
                     continue
                 self.image_list.addItem(entry.get("prefix", "") + p.name)
         finally:
             self.image_list.setUpdatesEnabled(True)
-        self._update_dataset_summary()
+        self._set_dataset_summary_label(totals)
 
     def _on_camera_backend_changed(self, backend: str) -> None:
         is_basler = backend == "Basler/Pylon"
@@ -1965,6 +1830,8 @@ class MainWindow(QMainWindow):
                 + "• Basler test: python -c \"from pypylon import pylon; print(pylon.TlFactory.GetInstance().EnumerateDevices())\"",
             )
             return
+        # Force the first tick after (re)opening to process a frame.
+        self._last_frame_seq = None
         self.timer.start(16)
         self.status.showMessage(self.camera.last_result.message, 8000)
 
@@ -2021,6 +1888,16 @@ class MainWindow(QMainWindow):
         return cv2.resize(frame, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
 
     def _on_timer(self) -> None:
+        # The display timer runs faster than most cameras deliver frames, so the
+        # threaded reader often still holds the same frame as the previous tick.
+        # Skip the decode/adjust/scale/repaint pipeline until a new frame arrives.
+        if getattr(self.camera, "threaded", False):
+            seq = self.camera.frame_seq()
+            if seq == self._last_frame_seq and self.last_raw is not None:
+                return
+        else:
+            seq = None
+
         ok, frame = self.camera.read()
         if not ok or frame is None:
             self.blank_frame_count = getattr(self, "blank_frame_count", 0) + 1
@@ -2031,6 +1908,7 @@ class MainWindow(QMainWindow):
                 )
             return
 
+        self._last_frame_seq = seq
         self.blank_frame_count = 0
         # Drop stale buffered frames when requested. This makes the display feel current,
         # even if it means skipping intermediate frames.
@@ -2636,6 +2514,10 @@ class MainWindow(QMainWindow):
         """
         items: list[dict] = []
         count = 0
+        # The Count-class filter is constant for this call; parse it once instead
+        # of rebuilding the name/id sets for every detection.
+        count_names = self._count_class_names()
+        count_ids = self._count_class_ids()
         for r in results or []:
             names = getattr(r, "names", {}) or {}
 
@@ -2654,8 +2536,6 @@ class MainWindow(QMainWindow):
                     clss = obb.cls.cpu().numpy()
                 except Exception:
                     clss = []
-                count_names = self._count_class_names()
-                count_ids = self._count_class_ids()
                 obb_seen_for_result = len(polys) > 0
                 for i, poly in enumerate(polys):
                     pts = np.array(poly, dtype=float).reshape(-1, 2)[:4]
@@ -2703,8 +2583,6 @@ class MainWindow(QMainWindow):
                 conf = float(confs[i]) if i < len(confs) else 0.0
                 cls_id = int(clss[i]) if i < len(clss) else 0
                 name = self._model_class_name(names, cls_id)
-                count_names = self._count_class_names()
-                count_ids = self._count_class_ids()
                 if not self._count_filter_match(name, cls_id, count_names, count_ids):
                     continue
                 items.append({
@@ -2720,87 +2598,6 @@ class MainWindow(QMainWindow):
                 })
                 count += 1
         return items, count
-
-    def _draw_battery_obb_overlay(self, image, results) -> tuple[int, list[str]]:
-        count = 0
-        lines: list[str] = []
-        for r in results or []:
-            obb = getattr(r, "obb", None)
-            if obb is None:
-                continue
-            # Four-corner output is what rotation-aware count testing uses.
-            try:
-                polys = obb.xyxyxyxy.cpu().numpy()
-            except Exception:
-                polys = []
-            try:
-                xywhr = obb.xywhr.cpu().numpy()
-            except Exception:
-                xywhr = []
-            try:
-                confs = obb.conf.cpu().numpy()
-            except Exception:
-                confs = []
-
-            for i, poly in enumerate(polys):
-                pts = np.array(poly, dtype=np.int32).reshape(-1, 2)
-                cv2.polylines(image, [pts], True, (255, 128, 0), 3)
-
-                # Draw corner numbers so bad corner ordering / bad labels are obvious.
-                for n, (px, py) in enumerate(pts, start=1):
-                    cv2.circle(image, (int(px), int(py)), 5, (255, 128, 0), 2)
-                    cv2.putText(image, str(n), (int(px) + 7, int(py) - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 128, 0), 2, cv2.LINE_AA)
-
-                cx = int(np.mean(pts[:, 0])); cy = int(np.mean(pts[:, 1]))
-                edge_angle_deg, edge_len = self._polygon_long_edge_angle(pts)
-                raw_angle_deg = None
-                if i < len(xywhr) and len(xywhr[i]) >= 5:
-                    raw_angle_deg = self._normalize_angle_deg(math.degrees(float(xywhr[i][4])))
-                conf = float(confs[i]) if i < len(confs) else 0.0
-
-                label = f"battery {conf:.2f}"
-                if edge_angle_deg is not None:
-                    label += f" long {edge_angle_deg:.1f} deg"
-                cv2.putText(image, label, (max(5, cx - 120), max(20, cy - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 128, 0), 2, cv2.LINE_AA)
-
-                count += 1
-                if edge_angle_deg is not None:
-                    raw_txt = f", raw_xywhr={raw_angle_deg:.1f} deg" if raw_angle_deg is not None else ""
-                    lines.append(f"{count}. conf={conf:.2f}, long-edge angle={edge_angle_deg:.1f} deg{raw_txt}, center=({cx}, {cy})")
-                else:
-                    lines.append(f"{count}. conf={conf:.2f}, center=({cx}, {cy})")
-        return count, lines
-
-    def _draw_bung_overlay(self, image, results) -> int:
-        count = 0
-        for r in results or []:
-            boxes = getattr(r, "boxes", None)
-            if boxes is None:
-                continue
-            try:
-                xyxy = boxes.xyxy.cpu().numpy()
-            except Exception:
-                xyxy = []
-            try:
-                confs = boxes.conf.cpu().numpy()
-            except Exception:
-                confs = []
-            try:
-                clss = boxes.cls.cpu().numpy()
-            except Exception:
-                clss = []
-            names = getattr(r, "names", {}) or {}
-            for i, b in enumerate(xyxy):
-                x1, y1, x2, y2 = [int(v) for v in b]
-                cx = int((x1 + x2) / 2); cy = int((y1 + y2) / 2)
-                cv2.rectangle(image, (x1, y1), (x2, y2), (0, 220, 0), 2)
-                cv2.circle(image, (cx, cy), 4, (0, 255, 0), 2)
-                conf = float(confs[i]) if i < len(confs) else 0.0
-                cls_id = int(clss[i]) if i < len(clss) else 0
-                name = self._model_class_name(names, cls_id)
-                cv2.putText(image, f"{name} {conf:.2f}", (x1, max(18, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 0), 2, cv2.LINE_AA)
-                count += 1
-        return count
 
     def open_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Open image", str(capture_folder(self.recipe)), "Images (*.jpg *.jpeg *.png *.bmp)")
@@ -3167,7 +2964,9 @@ class MainWindow(QMainWindow):
         state = "OK" if battery_count == 1 and bung_count == expected else "CHECK"
         if hasattr(self, "count_label"):
             self.count_label.setText(f"Battery: {battery_count} / 1   Bungs: {bung_count} / expected {expected}  [{state}]")
-        self._update_dataset_summary()
+        # Editing on-screen boxes does not change the on-disk dataset, so the
+        # summary is refreshed by save/review/delete/capture and recipe changes
+        # instead of walking every sidecar on each box draw/nudge.
 
     def clear_boxes_unsaved(self) -> None:
         """Clear the editable canvas only; never overwrite or delete saved JSON."""
@@ -3219,30 +3018,42 @@ class MainWindow(QMainWindow):
             status = "problem"
         return status, int(entry.get("battery_count", 0)), int(entry.get("bung_count", 0))
 
+    @staticmethod
+    def _new_summary_totals() -> dict:
+        return {"total": 0, "labeled": 0, "ready": 0, "forced": 0, "problems": 0, "needs_review": 0}
+
+    def _accumulate_summary(self, totals: dict, entry: dict) -> None:
+        """Fold one cached image-status entry into the running dataset totals."""
+        totals["total"] += 1
+        status = entry.get("status", "unlabeled")
+        if entry.get("labeled", False):
+            totals["labeled"] += 1
+        if status == "ready":
+            totals["ready"] += 1
+        elif status == "forced":
+            totals["forced"] += 1
+        elif status == "problem":
+            totals["problems"] += 1
+        elif status == "needs_review":
+            totals["needs_review"] += 1
+            totals["problems"] += 1
+
+    def _set_dataset_summary_label(self, totals: dict) -> None:
+        if not hasattr(self, "dataset_label"):
+            return
+        self.dataset_label.setText(
+            f"Dataset: {totals['total']} images, {totals['labeled']} labeled, "
+            f"{totals['ready']} ready, {totals['forced']} forced, "
+            f"{totals['problems']} problems, {totals['needs_review']} needs review"
+        )
+
     def _update_dataset_summary(self) -> None:
         if not hasattr(self, "dataset_label"):
             return
-        paths = self._get_recipe_image_paths()
-        total = len(paths)
-        labeled = ready = forced = problems = needs_review = 0
-        for p in paths:
-            entry = self._cached_image_status(p)
-            status = entry.get("status", "unlabeled")
-            if entry.get("labeled", False):
-                labeled += 1
-            if status == "ready":
-                ready += 1
-            elif status == "forced":
-                forced += 1
-            elif status == "problem":
-                problems += 1
-            elif status == "needs_review":
-                needs_review += 1
-                problems += 1
-        self.dataset_label.setText(
-            f"Dataset: {total} images, {labeled} labeled, {ready} ready, "
-            f"{forced} forced, {problems} problems, {needs_review} needs review"
-        )
+        totals = self._new_summary_totals()
+        for p in self._get_recipe_image_paths():
+            self._accumulate_summary(totals, self._cached_image_status(p))
+        self._set_dataset_summary_label(totals)
 
 
     def _current_image_index(self) -> int:
@@ -3330,8 +3141,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Export", str(e))
             return
         data_yaml = out / "data.yaml"
-        if hasattr(self, "train_dataset_edit"):
-            self.train_dataset_edit.setText(str(data_yaml))
         QMessageBox.information(
             self,
             "Export complete",
@@ -3361,427 +3170,6 @@ class MainWindow(QMainWindow):
             f"Combined YOLO dataset exported to:\n{out}\n\nTraining file:\n{data_yaml}\nManifest:\n{manifest}\n\nTask:\n{task}\nClass mode:\n{mode}\nReview filter:\nreviewed only"
         )
         self.status.showMessage(f"Exported combined YOLO {task} dataset: {out}", 8000)
-
-
-    def browse_train_dataset(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Select data.yaml", str(EXPORT_DIR), "YAML (*.yaml *.yml)")
-        if path:
-            self.train_dataset_edit.setText(path)
-
-    def start_training(self) -> None:
-        self.save_recipe_from_ui()
-        data_text = self.train_dataset_edit.text().strip()
-        data_yaml = Path(data_text) if data_text else Path()
-
-        # If there is no selected dataset, or the selected dataset is stale/incomplete,
-        # try to rebuild the YOLO export from the current recipe automatically.
-        def dataset_counts(yaml_path: Path):
-            dataset_root = yaml_path.parent
-            train_images = dataset_root / "images" / "train"
-            val_images = dataset_root / "images" / "val"
-            image_exts = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp", "*.tif", "*.tiff")
-            train_count = sum(len(list(train_images.glob(ext))) for ext in image_exts) if train_images.exists() else 0
-            val_count = sum(len(list(val_images.glob(ext))) for ext in image_exts) if val_images.exists() else 0
-            return train_images, val_images, train_count, val_count
-
-        def is_app_export_dataset(yaml_path: Path) -> bool:
-            try:
-                return yaml_path.exists() and yaml_path.parent.resolve().is_relative_to(EXPORT_DIR.resolve())
-            except Exception:
-                return False
-
-        def rebuild_reviewed_export(reason: str) -> bool:
-            nonlocal data_yaml
-            try:
-                mode = self._export_mode() if hasattr(self, "export_class_mode") else "label_names"
-                task = self._export_task() if hasattr(self, "export_task_combo") else "obb"
-                selected_export_name = data_yaml.parent.name if data_yaml and data_yaml.name else ""
-                combined = selected_export_name.startswith("all_recipes")
-                if task == "obb":
-                    out = export_all_recipes_obb(class_mode=mode, reviewed_only=True) if combined else export_recipe_obb(
-                        self.recipe.safe_name, class_mode=mode, reviewed_only=True
-                    )
-                else:
-                    out = export_all_recipes_yolo(class_mode=mode, reviewed_only=True) if combined else export_recipe_yolo(
-                        self.recipe.safe_name, class_mode=mode, reviewed_only=True
-                    )
-                data_yaml = out / "data.yaml"
-                self.train_dataset_edit.setText(str(data_yaml))
-                self.train_log.append(f"Rebuilt reviewed-only YOLO export before training ({reason}): {data_yaml}\n")
-                return True
-            except Exception as e:
-                msg = (
-                    "Training needs a completed reviewed-only YOLO export, but I could not build one.\n\n"
-                    f"Reason: {e}\n\n"
-                    "Only images saved or marked reviewed inside BungVision Label Studio are eligible for training. "
-                    "Mark the images you trust as reviewed, then try Start Training again."
-                )
-                self.train_log.append(msg + "\n")
-                QMessageBox.warning(self, "No Reviewed Trainable Dataset", msg)
-                return False
-
-        # App-generated export folders are deliberately rebuilt before training so an old
-        # data/exports folder cannot silently train on stale all-image exports from an
-        # earlier version. External data.yaml files selected by Browse are left alone.
-        if is_app_export_dataset(data_yaml):
-            if not rebuild_reviewed_export("avoid stale export folder"):
-                return
-
-        needs_export = not data_yaml.exists()
-        if data_yaml.exists():
-            train_images, val_images, train_count, val_count = dataset_counts(data_yaml)
-            needs_export = (not train_images.exists()) or (not val_images.exists()) or train_count == 0 or val_count == 0
-
-        if needs_export:
-            if not rebuild_reviewed_export("missing or incomplete dataset"):
-                return
-
-        # Final guard against stale or incomplete exports.
-        train_images, val_images, train_count, val_count = dataset_counts(data_yaml)
-        if not train_images.exists() or not val_images.exists() or train_count == 0 or val_count == 0:
-            msg = (
-                "The selected data.yaml still points to an incomplete YOLO export.\n\n"
-                f"Train images found: {train_count} at\n{train_images}\n\n"
-                f"Validation images found: {val_count} at\n{val_images}\n\n"
-                "Make sure you have captured images, drawn OBB labels, clicked Save Labels, and exported the current recipe."
-            )
-            self.train_log.append(msg + "\n")
-            QMessageBox.warning(self, "Incomplete YOLO Dataset", msg)
-            return
-
-        if importlib.util.find_spec("ultralytics") is None:
-            py = sys.executable
-            msg = (
-                "Ultralytics is not installed in the Python environment running this app.\n\n"
-                "Close the app, activate the same virtual environment, then run:\n\n"
-                f"{py} -m pip install ultralytics\n\n"
-                "Or reinstall everything from the project folder:\n\n"
-                f"{py} -m pip install -r requirements.txt\n\n"
-                "Then restart BungVision and try training again."
-            )
-            self.train_log.append(msg + "\n")
-            QMessageBox.warning(self, "Missing Ultralytics", msg)
-            return
-        if self.train_process and self.train_process.state() != QProcess.NotRunning:
-            QMessageBox.information(self, "Training", "Training is already running.")
-            return
-
-        runs_dir = DATA_DIR / "runs"
-        runs_dir.mkdir(parents=True, exist_ok=True)
-        code = (
-            "from ultralytics import YOLO\n"
-            f"model = YOLO(r'{self.base_model_edit.text().strip() or 'yolo11n.pt'}')\n"
-            f"model.train(data=r'{str(data_yaml)}', imgsz={self.imgsz_spin.value()}, "
-            f"epochs={self.epochs_spin.value()}, batch={self.batch_spin.value()}, "
-            f"project=r'{str(runs_dir)}', name=r'{self.run_name_edit.text().strip() or 'bungvision'}')\n"
-        )
-        self.train_process = QProcess(self)
-        self.train_process.setProgram(sys.executable)
-        self.train_process.setArguments(["-u", "-c", code])
-        self.train_process.setProcessChannelMode(QProcess.MergedChannels)
-        self.train_process.readyReadStandardOutput.connect(self._append_train_output)
-        self.train_process.finished.connect(self._training_finished)
-        self.train_log.clear()
-        self.train_log.append("Starting local YOLO training...\n")
-        self.train_process.start()
-
-    def stop_training(self) -> None:
-        if self.train_process and self.train_process.state() != QProcess.NotRunning:
-            self.train_process.terminate()
-            self.train_log.append("\nTraining stop requested.\n")
-
-    def _append_train_output(self) -> None:
-        if not self.train_process:
-            return
-        text = bytes(self.train_process.readAllStandardOutput()).decode(errors="replace")
-        self.train_log.moveCursor(QTextCursor.End)
-        self.train_log.insertPlainText(text)
-        self.train_log.moveCursor(QTextCursor.End)
-
-    def _training_finished(self, exit_code: int, exit_status) -> None:
-        self.train_log.append(f"\nTraining finished. Exit code: {exit_code}\n")
-        runs = sorted((DATA_DIR / "runs").glob("*/weights/best.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if runs:
-            self.model_path_edit.setText(str(runs[0]))
-            if hasattr(self, "trt_source_model_edit"):
-                self.trt_source_model_edit.setText(str(runs[0]))
-            self.train_log.append(f"Newest model: {runs[0]}\n")
-            self.train_log.append("Next step: click Export TensorRT .engine, then load the generated .engine in Live Detect.\n")
-
-
-    def browse_trt_source_model(self) -> None:
-        start = DATA_DIR / "runs"
-        path, _ = QFileDialog.getOpenFileName(self, "Select trained PyTorch model for TensorRT export", str(start), "PyTorch model (*.pt);;All files (*)")
-        if path:
-            self.trt_source_model_edit.setText(path)
-
-    def export_tensorrt_engine(self) -> None:
-        """Export a trained .pt model to TensorRT .engine.
-
-        Default path is native Jetson ONNX -> trtexec:
-        1) Use Ultralytics on CPU to export best.pt -> best.onnx.
-        2) Use NVIDIA TensorRT trtexec to build best.engine.
-
-        This avoids the common Orin sm_87 PyTorch CUDA wheel issue where generic
-        PyTorch can see CUDA but cannot execute kernels on the Jetson GPU.
-        """
-        if importlib.util.find_spec("ultralytics") is None:
-            py = sys.executable
-            msg = (
-                "Ultralytics is not installed in this Python environment.\n\n"
-                f"Run:\n{py} -m pip install ultralytics[export] onnx\n"
-            )
-            self.train_log.append(msg + "\n")
-            QMessageBox.warning(self, "Missing Ultralytics", msg)
-            return
-        src = self.trt_source_model_edit.text().strip() if hasattr(self, "trt_source_model_edit") else ""
-        if not src and hasattr(self, "model_path_edit"):
-            maybe = self.model_path_edit.text().strip()
-            if maybe.endswith(".pt"):
-                src = maybe
-                self.trt_source_model_edit.setText(src)
-        if not src:
-            QMessageBox.information(self, "TensorRT Export", "Select a trained best.pt model first.")
-            return
-        src_path = Path(src)
-        if not src_path.exists() or src_path.suffix.lower() != ".pt":
-            QMessageBox.warning(self, "TensorRT Export", "TensorRT export starts from a trained .pt file. Select a valid best.pt file.")
-            return
-        if self.export_process and self.export_process.state() != QProcess.NotRunning:
-            QMessageBox.information(self, "TensorRT Export", "A TensorRT export is already running.")
-            return
-
-        half = self.trt_precision_combo.currentIndex() == 0
-        method = self.trt_method_combo.currentIndex() if hasattr(self, "trt_method_combo") else 0
-        imgsz = self.trt_imgsz_spin.value()
-        workspace_mb = self.trt_workspace_spin.value() * 1024
-
-        if method == 0:
-            code = (
-                "from ultralytics import YOLO\n"
-                "from pathlib import Path\n"
-                "import shutil, subprocess, sys, os\n"
-                f"src = Path(r'{str(src_path)}')\n"
-                f"imgsz = {imgsz}\n"
-                f"half = {str(half)}\n"
-                f"workspace_mb = {workspace_mb}\n"
-                "print(f'Loading PyTorch model for CPU ONNX export: {src}', flush=True)\n"
-                "model = YOLO(str(src))\n"
-                "print('Step 1/2: exporting ONNX on CPU. This avoids PyTorch CUDA/sm_87 issues.', flush=True)\n"
-                "onnx_out = model.export(format='onnx', imgsz=imgsz, device='cpu', simplify=False, opset=12)\n"
-                "onnx_path = Path(onnx_out) if onnx_out else src.with_suffix('.onnx')\n"
-                "if not onnx_path.exists():\n"
-                "    candidates = sorted(src.parent.glob('*.onnx'), key=lambda p: p.stat().st_mtime, reverse=True)\n"
-                "    if candidates:\n"
-                "        onnx_path = candidates[0]\n"
-                "if not onnx_path.exists():\n"
-                "    raise FileNotFoundError(f'ONNX export did not create a file near {src.parent}')\n"
-                "trtexec = shutil.which('trtexec')\n"
-                "if not trtexec:\n"
-                "    for p in ['/usr/src/tensorrt/bin/trtexec', '/usr/bin/trtexec']:\n"
-                "        if Path(p).exists():\n"
-                "            trtexec = p\n"
-                "            break\n"
-                "if not trtexec:\n"
-                "    raise FileNotFoundError('trtexec not found. Install TensorRT tools from JetPack/SDK Manager, or add /usr/src/tensorrt/bin to PATH.')\n"
-                "engine_path = src.with_suffix('.engine')\n"
-                "cmd = [trtexec, f'--onnx={onnx_path}', f'--saveEngine={engine_path}', f'--memPoolSize=workspace:{workspace_mb}']\n"
-                "if half:\n"
-                "    cmd.append('--fp16')\n"
-                "print('Step 2/2: building TensorRT engine with trtexec:', flush=True)\n"
-                "print(' '.join(str(x) for x in cmd), flush=True)\n"
-                "proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)\n"
-                "print(proc.stdout, flush=True)\n"
-                "if proc.returncode != 0:\n"
-                "    raise SystemExit(proc.returncode)\n"
-                "if not engine_path.exists():\n"
-                "    raise FileNotFoundError(f'trtexec finished but engine was not found: {engine_path}')\n"
-                "print(f'TensorRT export complete: {engine_path}', flush=True)\n"
-            )
-            self.train_log.append("\nStarting native TensorRT export: ONNX on CPU -> trtexec engine...\n")
-        else:
-            code = (
-                "from ultralytics import YOLO\n"
-                "from pathlib import Path\n"
-                f"src = Path(r'{str(src_path)}')\n"
-                "print(f'Loading model: {src}', flush=True)\n"
-                "model = YOLO(str(src))\n"
-                "print('Exporting TensorRT engine through Ultralytics. Requires working PyTorch CUDA.', flush=True)\n"
-                f"out = model.export(format='engine', imgsz={imgsz}, half={str(half)}, workspace={self.trt_workspace_spin.value()}, simplify=True, device=0)\n"
-                "print(f'TensorRT export complete: {out}', flush=True)\n"
-            )
-            self.train_log.append("\nStarting Ultralytics direct TensorRT export...\n")
-
-        self.export_process = QProcess(self)
-        self.export_process.setProgram(sys.executable)
-        self.export_process.setArguments(["-u", "-c", code])
-        self.export_process.setProcessChannelMode(QProcess.MergedChannels)
-        self.export_process.readyReadStandardOutput.connect(self._append_export_output)
-        self.export_process.finished.connect(self._export_finished)
-        self.export_process.start()
-
-    def _append_export_output(self) -> None:
-        if not self.export_process:
-            return
-        text = bytes(self.export_process.readAllStandardOutput()).decode(errors="replace")
-        self.train_log.moveCursor(QTextCursor.End)
-        self.train_log.insertPlainText(text)
-        self.train_log.moveCursor(QTextCursor.End)
-
-    def _export_finished(self, exit_code: int, exit_status) -> None:
-        self.train_log.append(f"\nTensorRT export finished. Exit code: {exit_code}\n")
-        src = self.trt_source_model_edit.text().strip() if hasattr(self, "trt_source_model_edit") else ""
-        if src:
-            engine = Path(src).with_suffix(".engine")
-            # Ultralytics normally writes next to the .pt file, but search nearby too.
-            candidates = []
-            if engine.exists():
-                candidates.append(engine)
-            candidates.extend(sorted(Path(src).parent.glob("*.engine"), key=lambda p: p.stat().st_mtime, reverse=True))
-            if candidates:
-                chosen = candidates[0]
-                self.model_path_edit.setText(str(chosen))
-                self.train_log.append(f"TensorRT engine ready: {chosen}\n")
-                self.train_log.append("Load this .engine in Live Detect and click Start Live Detection.\n")
-                self.status.showMessage("TensorRT engine ready", 8000)
-            elif exit_code == 0:
-                self.train_log.append("Export reported success, but I could not locate the .engine file. Check the export log above.\n")
-
-    def _live_detection_checkbox_changed(self, state) -> None:
-        enabled = self.live_detect_check.isChecked()
-        if hasattr(self, "start_live_detect_btn"):
-            self.start_live_detect_btn.setText("Stop Live Detection" if enabled else "Start Live Detection")
-        if enabled:
-            if self.yolo_model is None:
-                self.load_detect_model()
-            if self.yolo_model is None:
-                self.live_detect_check.blockSignals(True)
-                self.live_detect_check.setChecked(False)
-                self.live_detect_check.blockSignals(False)
-                if hasattr(self, "start_live_detect_btn"):
-                    self.start_live_detect_btn.setText("Start Live Detection")
-                return
-            if not self.camera.is_open():
-                self.open_camera()
-            # Force a detection on the next timer tick instead of waiting N frames.
-            self.detect_frame_counter = self.detect_every_spin.value()
-            self.detect_status_label.setText("Live detection running. Boxes should update as the part moves.")
-            self.status.showMessage("Live YOLO detection running", 5000)
-        else:
-            self.status.showMessage("Live YOLO detection stopped", 5000)
-
-    def toggle_live_detection(self) -> None:
-        self.live_detect_check.setChecked(not self.live_detect_check.isChecked())
-
-    def browse_detect_model(self) -> None:
-        start = DATA_DIR / "runs"
-        path, _ = QFileDialog.getOpenFileName(self, "Select YOLO model", str(start), "YOLO models (*.pt *.engine);;PyTorch (*.pt);;TensorRT (*.engine);;All files (*)")
-        if path:
-            self.model_path_edit.setText(path)
-
-    def load_detect_model(self, *args) -> None:
-        # Accept *args because Qt clicked/toggled signals can pass a checked state or
-        # enum-like values depending on PySide6 version. Ignoring them prevents
-        # accidental KeyboardModifier/checked-state values from being treated as
-        # model-load arguments.
-        path = str(self.model_path_edit.text()).strip()
-        if not path:
-            QMessageBox.information(self, "Detection", "Browse to a best.pt or best.engine model first.")
-            return
-
-        model_path = Path(path).expanduser()
-        if not model_path.exists():
-            QMessageBox.warning(self, "Detection", f"Model file does not exist:\n{model_path}")
-            return
-
-        try:
-            from ultralytics import YOLO
-            # Explicit task='detect' helps Ultralytics avoid guessing incorrectly,
-            # especially with TensorRT .engine files. Force a plain Python string so
-            # no Qt enum/path object can leak into Ultralytics.
-            self.yolo_model = YOLO(str(model_path), task="detect")
-        except Exception as e:
-            tb = traceback.format_exc()
-            runtime_hint = (
-                "\n\nTensorRT note:\n"
-                "If this .engine was built inside the Jetson Docker container but BungVision is running outside Docker, "
-                "the host Python environment must also have compatible TensorRT/CUDA runtime access. "
-                "If native TensorRT cannot see the GPU, .engine loading outside Docker may fail.\n"
-            ) if str(model_path).lower().endswith(".engine") else ""
-            msg = (
-                "Could not load YOLO model.\n\n"
-                "For .pt models, check Ultralytics/Torch. For .engine models, check Ultralytics + TensorRT runtime.\n"
-                "Recommended install for engine loading in the same environment running BungVision:\n"
-                "  python -m pip install 'ultralytics[export]'\n"
-                f"{runtime_hint}\nError:\n{e}\n\nTraceback:\n{tb}"
-            )
-            self.detect_status_label.setText(msg[:3000])
-            QMessageBox.warning(self, "Detection", msg[:6000])
-            self.yolo_model = None
-            return
-        runtime = "TensorRT" if str(model_path).lower().endswith(".engine") else "PyTorch"
-        self.detect_status_label.setText(f"Loaded {runtime} model: {model_path}\nClick Start Live Detection to continuously update boxes as the part moves, or Detect Once for a single-frame test.")
-        self.status.showMessage(f"YOLO model loaded ({runtime})", 5000)
-
-    def _detections_to_boxes(self, result) -> list[dict]:
-        out: list[dict] = []
-        names = getattr(result, "names", {0: "battery", 1: "bung"})
-        if result is None or result.boxes is None:
-            return out
-        xyxy = result.boxes.xyxy.cpu().numpy()
-        cls = result.boxes.cls.cpu().numpy()
-        conf = result.boxes.conf.cpu().numpy()
-        for coords, c, score in zip(xyxy, cls, conf):
-            x1, y1, x2, y2 = [float(v) for v in coords]
-            cid = int(c)
-            base_label = names.get(cid, str(cid)) if isinstance(names, dict) else str(cid)
-            out.append({
-                "x": x1,
-                "y": y1,
-                "w": max(1.0, x2 - x1),
-                "h": max(1.0, y2 - y1),
-                "class_id": cid,
-                "label": base_label,
-                "confidence": float(score),
-            })
-        return out
-
-    def _summarize_detections(self, boxes: list[dict]) -> str:
-        battery_count = sum(1 for b in boxes if int(b.get("class_id", -1)) == 0 or b.get("label") == "battery")
-        bung_count = sum(1 for b in boxes if int(b.get("class_id", -1)) == 1 or b.get("label") == "bung")
-        expected = self._expected_bungs_value()
-        result = "PASS" if battery_count >= 1 and bung_count >= expected else "FAIL / CHECK"
-        return f"{result}: Battery {battery_count}, Bungs {bung_count} / expected {expected}"
-
-    def _run_detection_on_frame(self, frame, update_canvas: bool = True) -> list[dict]:
-        if self.yolo_model is None:
-            return []
-        try:
-            results = self.yolo_model.predict(frame, conf=self.conf_spin.value(), iou=self.iou_spin.value(), verbose=False)
-            boxes = self._detections_to_boxes(results[0] if results else None)
-            if update_canvas:
-                self.canvas.set_boxes_from_dicts(boxes)
-                self.detect_status_label.setText(self._summarize_detections(boxes))
-            return boxes
-        except Exception as e:
-            self.detect_status_label.setText(f"Detection error: {e}")
-            return []
-
-    def detect_current_frame(self, save_as_labels: bool = False) -> None:
-        if self.yolo_model is None:
-            self.load_detect_model()
-            if self.yolo_model is None:
-                return
-        frame = self.last_adjusted if self.last_adjusted is not None else self.last_raw
-        if frame is None:
-            QMessageBox.information(self, "Detection", "Open live view, capture, or load an image first.")
-            return
-        boxes = self._run_detection_on_frame(frame, update_canvas=True)
-        if save_as_labels and self.current_image_path:
-            # Use detections as editable label boxes for model-assisted labeling.
-            self.save_labels()
-        elif save_as_labels:
-            QMessageBox.information(self, "Detection", "Detections are shown, but no captured/open image is selected to save labels against.")
 
 
 def main() -> None:

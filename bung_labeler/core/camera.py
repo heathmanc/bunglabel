@@ -96,6 +96,7 @@ class CameraSource:
         self._lock = threading.Lock()
         self._latest_frame = None
         self._latest_ok = False
+        self._frame_seq = 0
         self._read_fps = 0.0
         self._frame_counter = 0
         self._fps_t0 = time.perf_counter()
@@ -289,6 +290,7 @@ class CameraSource:
                     with self._lock:
                         self._latest_frame = frame
                         self._latest_ok = True
+                        self._frame_seq += 1
                     break
                 time.sleep(0.05)
         except Exception as e:
@@ -423,6 +425,7 @@ class CameraSource:
                 with self._lock:
                     self._latest_frame = frame
                     self._latest_ok = True
+                    self._frame_seq += 1
                 break
             time.sleep(0.05)
 
@@ -478,6 +481,7 @@ class CameraSource:
                 with self._lock:
                     self._latest_frame = frame
                     self._latest_ok = True
+                    self._frame_seq += 1
 
                 self._frame_counter += 1
                 now = time.perf_counter()
@@ -511,6 +515,14 @@ class CameraSource:
 
     def read_fps(self) -> float:
         return float(self._read_fps)
+
+    def frame_seq(self) -> int:
+        """Monotonic counter bumped whenever a new frame is stored.
+
+        Lets the UI skip re-processing an unchanged frame when the display
+        timer ticks faster than the camera delivers frames.
+        """
+        return int(self._frame_seq)
 
     def drain(self, count: int = 2) -> None:
         # In threaded mode, the reader loop already keeps only the newest frame.
