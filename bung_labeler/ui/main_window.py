@@ -74,6 +74,7 @@ from bung_labeler.core import review as review_logic
 from bung_labeler.core import geometry as geom
 from bung_labeler.core import export_report
 from bung_labeler.core import relabel as relabel_logic
+from bung_labeler.core import active_learning
 from bung_labeler.version import APP_TITLE
 from bung_labeler.ui.canvas import ImageCanvas
 
@@ -99,6 +100,9 @@ class MainWindow(QMainWindow):
         self.last_raw = None
         self.last_adjusted = None
         self.current_image_path: Path | None = None
+        # Active-learning review queue (model-prioritized unreviewed images).
+        self._review_queue: list[Path] = []
+        self._review_queue_pos = -1
         self.camera_settings = load_camera_settings()
         self.class_config = load_class_config()
         self.class_names = class_names_from_config(self.class_config)
@@ -267,6 +271,17 @@ class MainWindow(QMainWindow):
         relabel_action = QAction("Bulk relabel class...", self)
         relabel_action.triggered.connect(self.bulk_relabel_dialog)
         tools_menu.addAction(relabel_action)
+
+        tools_menu.addSeparator()
+
+        build_queue_action = QAction("Build review queue (model)", self)
+        build_queue_action.triggered.connect(self.build_review_queue)
+        tools_menu.addAction(build_queue_action)
+
+        next_queue_action = QAction("Next in review queue", self)
+        next_queue_action.setShortcut("Ctrl+Shift+N")
+        next_queue_action.triggered.connect(self.next_in_review_queue)
+        tools_menu.addAction(next_queue_action)
 
     def _scroll_panel(self, widget: QWidget, min_width: int, preferred_width: int) -> QScrollArea:
         scroll = QScrollArea()
@@ -2194,6 +2209,122 @@ class MainWindow(QMainWindow):
             f"Auto-labeled {battery_count} batteries, {bung_count} bungs. Correct as needed, then Save Labels.",
             8000,
         )
+
+    def _detection_disagreement(self, results):
+        """Summarize a model result for active-learning scoring.
+
+        Returns (battery_count, per_battery_bung_counts, outside, avg_conf).
+        Reuses the model-test overlay builders and the same bung-center
+        containment used by the count test.
+        """
+        battery_items, battery_count, _ = self._battery_obb_overlay_items(results)
+        if battery_count == 0:
+            battery_items, battery_count, _ = self._battery_box_overlay_items(results)
+        bung_items, _ = self._bung_overlay_items(results)
+
+        batteries = []
+        for it in battery_items:
+            poly = it.get("points", [])
+            if not poly and "xyxy" in it:
+                x1, y1, x2, y2 = [float(v) for v in it.get("xyxy", [0, 0, 0, 0])]
+                poly = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+            batteries.append(poly)
+
+        per = [0] * len(batteries)
+        outside = 0
+        confs = []
+        for it in bung_items:
+            if it.get("conf") is not None:
+                confs.append(float(it.get("conf")))
+            cx = float(it.get("cx", 0)); cy = float(it.get("cy", 0))
+            assigned = False
+            for i, poly in enumerate(batteries):
+                if self._point_inside_polygon(cx, cy, poly):
+                    per[i] += 1
+                    assigned = True
+                    break
+            if not assigned:
+                outside += 1
+        avg_conf = sum(confs) / len(confs) if confs else None
+        return battery_count, per, outside, avg_conf
+
+    def build_review_queue(self) -> None:
+        """Run the model across unreviewed images and order them by how much the
+        detections disagree with the recipe, so the most informative images are
+        labeled first."""
+        model_path = self.test_model_edit.text().strip() if hasattr(self, "test_model_edit") else ""
+        if not model_path:
+            QMessageBox.information(
+                self, "Review queue",
+                "Set a trained OBB model in the Model Test tab first, then build the queue.",
+            )
+            return
+
+        todo = []
+        for p in self._get_recipe_image_paths():
+            entry = self._cached_image_status(p)
+            if entry.get("status") not in ("ready", "forced"):
+                todo.append(p)
+        if not todo:
+            QMessageBox.information(self, "Review queue", "No unreviewed images to prioritize in this recipe.")
+            return
+        if len(todo) > 200:
+            reply = QMessageBox.question(
+                self, "Review queue",
+                f"Run the model on {len(todo)} unreviewed images? This may take a while.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
+        scored = []
+        for i, p in enumerate(todo):
+            self.status.showMessage(f"Scoring {i + 1}/{len(todo)}: {p.name}", 1000)
+            QApplication.processEvents()
+            try:
+                _frame, results, _t0, _t1 = self._run_test_model_on_image(p)
+            except Exception:
+                # A model failure on an image is itself a reason to look at it.
+                scored.append(active_learning.QueueItem(str(p), active_learning.NO_BATTERY_PENALTY))
+                continue
+            bc, per, outside, avg_conf = self._detection_disagreement(results)
+            score = active_learning.disagreement_score(bc, per, outside, int(expected), avg_conf)
+            scored.append(active_learning.QueueItem(str(p), score))
+
+        ranked = active_learning.rank_items(scored)
+        self._review_queue = [Path(it.key) for it in ranked]
+        self._review_queue_pos = -1
+
+        top = ranked[: min(5, len(ranked))]
+        lines = [f"{Path(it.key).name}: score {it.score:.1f}" for it in top]
+        QMessageBox.information(
+            self, "Review queue",
+            f"Prioritized {len(ranked)} unreviewed image(s), highest disagreement first:\n\n"
+            + "\n".join(lines)
+            + "\n\nUse Tools > Next in review queue (Ctrl+Shift+N) to step through them.",
+        )
+        self.next_in_review_queue()
+
+    def next_in_review_queue(self) -> None:
+        if not self._review_queue:
+            QMessageBox.information(
+                self, "Review queue",
+                "Build the review queue first (Tools > Build review queue).",
+            )
+            return
+        # Advance past any images that have since been deleted.
+        while self._review_queue_pos + 1 < len(self._review_queue):
+            self._review_queue_pos += 1
+            path = self._review_queue[self._review_queue_pos]
+            if path.exists():
+                self._load_image_path(path)
+                self.status.showMessage(
+                    f"Review queue {self._review_queue_pos + 1}/{len(self._review_queue)}: {path.name}",
+                    6000,
+                )
+                return
+        self.status.showMessage("End of review queue.", 5000)
 
     def validate_current_image(self) -> None:
         """Run label-quality linting on the on-canvas boxes and report issues."""

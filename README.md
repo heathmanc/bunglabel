@@ -1,7 +1,7 @@
 # BungVision Label Studio
 
-**Current target version:** v0.9.45  
-**Package reviewed:** `bung_labeling_tool_v0_9_45_bulk_relabel.zip`  
+**Current target version:** v0.9.46  
+**Package reviewed:** `bung_labeling_tool_v0_9_46_active_learning.zip`  
 **Purpose:** custom PySide6 labeling/capture/training utility for BungVision battery bung inspection.
 
 This is **not** the commercial HumanSignal Label Studio project. It is a custom Python/PySide6 desktop tool used to capture, review, label, and export training images for the BungVision machine-vision system.
@@ -184,6 +184,7 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 │   ├── __main__.py
 │   ├── version.py
 │   ├── core/
+│   │   ├── active_learning.py
 │   │   ├── camera.py
 │   │   ├── export_report.py
 │   │   ├── geometry.py
@@ -198,6 +199,7 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 │       ├── canvas.py
 │       └── main_window.py
 ├── tests/
+│   ├── test_active_learning.py
 │   ├── test_export_report.py
 │   ├── test_geometry.py
 │   ├── test_relabel.py
@@ -619,6 +621,9 @@ The canvas keeps a bounded per-image history. Box creation, deletion, handle dra
 ### Bulk relabel (Tools → Bulk relabel class…, v0.9.45)
 Reassigns every box of one class to another across the current recipe's saved label files — e.g. consolidating a stray `rubber_bung` into `bung`. Shows a dry-run preview ("will change N boxes across M images") before applying. Because changing a class can alter the battery/bung counts an image was reviewed against, every changed image is returned to the review queue (review marker cleared). Pure logic lives in `core/relabel.py` and is unit-tested; it edits sidecars directly and is not undoable from the canvas, so the preview + confirmation are the safeguard.
 
+### Active-learning review queue (Tools → Build review queue, v0.9.46)
+Runs the Model Test tab's model across every unreviewed image in the recipe and ranks them by a disagreement score: missing batteries dominate, each battery's |detected − expected| bungs accumulates, stray bungs add uncertainty, and low average confidence nudges borderline images up. The operator then steps through the queue highest-disagreement-first via **Next in review queue** (Ctrl+Shift+N), labeling the most informative images first. Pure scoring lives in `core/active_learning.py` and is unit-tested; the model pass is preview-only and never writes labels.
+
 ---
 
 ## 10. Camera behavior
@@ -917,6 +922,7 @@ Key recent versions:
 - v0.9.43: performance tuning (frame-seq dedup, vectorized gamma LUT, hoisted filter parsing, single-pass image list), dead training/detect/TensorRT code removed; pure-logic refactor into `core/review.py`, `core/geometry.py`, `core/export_report.py` with headless tests
 - v0.9.44: model-assisted pre-labeling (Auto-label, Ctrl+L), annotation validation/linting (Validate, Ctrl+Shift+V), and canvas undo/redo (Ctrl+Z / Ctrl+Y)
 - v0.9.45: bulk relabel — reassign one class to another across a recipe's saved labels (Tools > Bulk relabel), with dry-run preview; changed images return to the review queue. Pure logic in `core/relabel.py`, unit-tested
+- v0.9.46: active-learning review queue — run the model across unreviewed images and order them by how much detections disagree with the recipe (Tools > Build review queue / Next in review queue, Ctrl+Shift+N). Pure scoring in `core/active_learning.py`, unit-tested
 
 ---
 
