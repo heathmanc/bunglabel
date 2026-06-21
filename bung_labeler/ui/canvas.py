@@ -122,6 +122,68 @@ class ImageCanvas(QWidget):
         self._fit_size = QSize()
         self._scaled_pixmap: QPixmap | None = None
         self._scaled_cache_key: tuple[int, int, float, int] | None = None
+
+        # Undo/redo history. Each entry is a serialized box list. A bounded
+        # depth keeps memory predictable even on long labeling sessions. Bursts
+        # of nudges coalesce into one undo step via a coalesce key.
+        self._undo_stack: list[list[dict]] = []
+        self._redo_stack: list[list[dict]] = []
+        self._history_limit = 100
+        self._last_coalesce_key = None
+
+    # --- undo/redo ---------------------------------------------------------
+
+    def _snapshot_boxes(self) -> list[dict]:
+        return [b.to_dict() for b in self.boxes]
+
+    def reset_history(self) -> None:
+        """Drop all undo/redo history. Called when a different image loads."""
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._last_coalesce_key = None
+
+    def push_undo_snapshot(self, coalesce_key=None) -> None:
+        """Record the current box list so the next mutation can be undone.
+
+        Pass a coalesce_key to merge a burst of similar edits (e.g. repeated
+        arrow-key nudges of the same handle) into a single undo step.
+        """
+        if coalesce_key is not None and coalesce_key == self._last_coalesce_key:
+            return
+        self._undo_stack.append(self._snapshot_boxes())
+        if len(self._undo_stack) > self._history_limit:
+            del self._undo_stack[0]
+        self._redo_stack.clear()
+        self._last_coalesce_key = coalesce_key
+
+    def _restore_snapshot(self, snap: list[dict]) -> None:
+        self.boxes = [Box.from_dict(b) for b in snap]
+        self.selected_idx = None
+        self.selected_handle_idx = None
+        self._last_coalesce_key = None
+        self.update()
+        self.boxes_changed.emit()
+
+    def can_undo(self) -> bool:
+        return bool(self._undo_stack)
+
+    def can_redo(self) -> bool:
+        return bool(self._redo_stack)
+
+    def undo(self) -> bool:
+        if not self._undo_stack:
+            return False
+        self._redo_stack.append(self._snapshot_boxes())
+        self._restore_snapshot(self._undo_stack.pop())
+        return True
+
+    def redo(self) -> bool:
+        if not self._redo_stack:
+            return False
+        self._undo_stack.append(self._snapshot_boxes())
+        self._restore_snapshot(self._redo_stack.pop())
+        return True
+
     def set_annotation_kind(self, kind: str) -> None:
         self.annotation_kind = str(kind or "box").lower()
         self.update()
@@ -175,6 +237,7 @@ class ImageCanvas(QWidget):
         self.model_test_overlays = []
         self.selected_idx = None
         self.selected_handle_idx = None
+        self.reset_history()
         self.fit_to_window()
         self.update()
         return True
@@ -231,6 +294,7 @@ class ImageCanvas(QWidget):
 
     def delete_selected(self) -> None:
         if self.selected_idx is not None and 0 <= self.selected_idx < len(self.boxes):
+            self.push_undo_snapshot()
             del self.boxes[self.selected_idx]
             self.selected_idx = None
             self.selected_handle_idx = None
@@ -240,6 +304,8 @@ class ImageCanvas(QWidget):
     def nudge_selected(self, dx: float, dy: float) -> None:
         if self.selected_idx is None or not (0 <= self.selected_idx < len(self.boxes)):
             return
+        # Coalesce a run of nudges on the same box/handle into one undo step.
+        self.push_undo_snapshot(coalesce_key=("nudge", self.selected_idx, self.selected_handle_idx))
         b = self.boxes[self.selected_idx]
         if b.kind == "obb" and self.selected_handle_idx is not None:
             b.points[self.selected_handle_idx][0] = max(0, min(self.image_w, b.points[self.selected_handle_idx][0] + dx))
@@ -392,6 +458,8 @@ class ImageCanvas(QWidget):
 
         handle = self._handle_at_screen_pos(pos)
         if event.button() == Qt.LeftButton and handle is not None:
+            # Snapshot pre-drag geometry so the whole drag is one undo step.
+            self.push_undo_snapshot()
             self.selected_idx, self.selected_handle_idx = handle
             self.dragging_handle = True
             self.setCursor(Qt.SizeAllCursor)
@@ -468,6 +536,7 @@ class ImageCanvas(QWidget):
             self.update()
             return
 
+        self.push_undo_snapshot()
         if self.annotation_kind == "obb":
             pts = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
             self.boxes.append(Box(x, y, w, h, int(self.class_id), self.class_name, "obb", pts))

@@ -1,7 +1,7 @@
 # BungVision Label Studio
 
-**Current target version:** v0.9.43  
-**Package reviewed:** `bung_labeling_tool_v0_9_43_performance_and_cleanup.zip`  
+**Current target version:** v0.9.44  
+**Package reviewed:** `bung_labeling_tool_v0_9_44_assist_validate_undo.zip`  
 **Purpose:** custom PySide6 labeling/capture/training utility for BungVision battery bung inspection.
 
 This is **not** the commercial HumanSignal Label Studio project. It is a custom Python/PySide6 desktop tool used to capture, review, label, and export training images for the BungVision machine-vision system.
@@ -601,6 +601,21 @@ The user commonly prefers `imgsz=736` for BungVision work.
 
 ---
 
+## 9.5. Labeling assistance (v0.9.44)
+
+Three features speed up labeling and protect dataset quality. They live under the **Tools** and **Edit** menus and reuse existing logic.
+
+### Model-assisted pre-labeling (Auto-label, Ctrl+L)
+Runs the trained model selected in the Model Test tab on the current image and turns its battery/bung detections into **editable labels** rather than draw-from-scratch boxes. The operator corrects predictions, then Save Labels as usual. It honors the Model Test **Confidence** setting, asks before replacing existing labels, and is a single Undo step. It never auto-saves — predictions are not training data until reviewed.
+
+### Annotation validation (Validate, Ctrl+Shift+V)
+Lints the on-canvas labels for the geometry-level mistakes the count-based review gate cannot see: degenerate/tiny boxes, boxes outside the image, heavily overlapping (duplicate) bungs, per-battery over/under counts, and bungs outside every battery. Advisory only — it reports issues without blocking. Pure logic lives in `core/review.py::validate_boxes` and is unit-tested.
+
+### Undo / redo (Ctrl+Z / Ctrl+Y)
+The canvas keeps a bounded per-image history. Box creation, deletion, handle drags, nudges (coalesced per burst), clear, copy-previous, and auto-label are all undoable. History resets when a different image loads.
+
+---
+
 ## 10. Camera behavior
 
 The camera layer supports OpenCV cameras and Basler/Pylon cameras.
@@ -894,7 +909,8 @@ Key recent versions:
 - v0.9.40: compact count inputs, no spinbox arrows
 - v0.9.41: compact right-panel button height for 1920x1080
 - v0.9.42: camera resolution apply / Basler AOI fix
-- v0.9.43: performance tuning (frame-seq dedup, vectorized gamma LUT, hoisted filter parsing, single-pass image list), dead training/detect/TensorRT code removed
+- v0.9.43: performance tuning (frame-seq dedup, vectorized gamma LUT, hoisted filter parsing, single-pass image list), dead training/detect/TensorRT code removed; pure-logic refactor into `core/review.py`, `core/geometry.py`, `core/export_report.py` with headless tests
+- v0.9.44: model-assisted pre-labeling (Auto-label, Ctrl+L), annotation validation/linting (Validate, Ctrl+Shift+V), and canvas undo/redo (Ctrl+Z / Ctrl+Y)
 
 ---
 

@@ -93,6 +93,46 @@ def test_counts_from_boxes():
     assert r.counts_from_boxes(boxes) == (2, 12)
 
 
+def test_validate_clean_image():
+    boxes = _full_battery(0)
+    assert r.validate_boxes(boxes, 500, 500, 6) == []
+
+
+def test_validate_flags_wrong_count_and_outside():
+    boxes = _full_battery(0, n=5) + [_bung(1000, 1000)]
+    issues = r.validate_boxes(boxes, 2000, 2000, 6)
+    joined = " ".join(issues)
+    assert "expected 6" in joined
+    assert "outside every battery" in joined
+
+
+def test_validate_flags_tiny_and_out_of_bounds():
+    boxes = [
+        _battery(0),
+        {"label": "bung", "class_id": 1, "x": 10, "y": 10, "w": 1, "h": 1},
+        {"label": "bung", "class_id": 1, "x": 480, "y": 10, "w": 60, "h": 10},
+    ]
+    issues = r.validate_boxes(boxes, 500, 500, 6)
+    joined = " ".join(issues)
+    assert "too small" in joined
+    assert "outside the image bounds" in joined
+
+
+def test_validate_flags_overlapping_bungs():
+    boxes = [
+        _battery(0),
+        {"label": "bung", "class_id": 1, "x": 20, "y": 20, "w": 20, "h": 20},
+        {"label": "bung", "class_id": 1, "x": 22, "y": 22, "w": 20, "h": 20},
+    ]
+    issues = r.validate_boxes(boxes, 500, 500, 6)
+    assert any("overlap" in s for s in issues)
+
+
+def test_validate_no_battery():
+    issues = r.validate_boxes([_bung(10, 10)], 500, 500, 6)
+    assert any("No battery" in s for s in issues)
+
+
 if __name__ == "__main__":
     import traceback
 
