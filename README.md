@@ -1,7 +1,7 @@
 # BungVision Label Studio
 
-**Current target version:** v0.9.44  
-**Package reviewed:** `bung_labeling_tool_v0_9_44_assist_validate_undo.zip`  
+**Current target version:** v0.9.45  
+**Package reviewed:** `bung_labeling_tool_v0_9_45_bulk_relabel.zip`  
 **Purpose:** custom PySide6 labeling/capture/training utility for BungVision battery bung inspection.
 
 This is **not** the commercial HumanSignal Label Studio project. It is a custom Python/PySide6 desktop tool used to capture, review, label, and export training images for the BungVision machine-vision system.
@@ -188,6 +188,7 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 │   │   ├── export_report.py
 │   │   ├── geometry.py
 │   │   ├── image_adjust.py
+│   │   ├── relabel.py
 │   │   ├── review.py
 │   │   ├── storage.py
 │   │   └── yolo_export.py
@@ -199,6 +200,7 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 ├── tests/
 │   ├── test_export_report.py
 │   ├── test_geometry.py
+│   ├── test_relabel.py
 │   └── test_review.py
 └── data/
     ├── camera_settings.json
@@ -614,6 +616,9 @@ Lints the on-canvas labels for the geometry-level mistakes the count-based revie
 ### Undo / redo (Ctrl+Z / Ctrl+Y)
 The canvas keeps a bounded per-image history. Box creation, deletion, handle drags, nudges (coalesced per burst), clear, copy-previous, and auto-label are all undoable. History resets when a different image loads.
 
+### Bulk relabel (Tools → Bulk relabel class…, v0.9.45)
+Reassigns every box of one class to another across the current recipe's saved label files — e.g. consolidating a stray `rubber_bung` into `bung`. Shows a dry-run preview ("will change N boxes across M images") before applying. Because changing a class can alter the battery/bung counts an image was reviewed against, every changed image is returned to the review queue (review marker cleared). Pure logic lives in `core/relabel.py` and is unit-tested; it edits sidecars directly and is not undoable from the canvas, so the preview + confirmation are the safeguard.
+
 ---
 
 ## 10. Camera behavior
@@ -911,6 +916,7 @@ Key recent versions:
 - v0.9.42: camera resolution apply / Basler AOI fix
 - v0.9.43: performance tuning (frame-seq dedup, vectorized gamma LUT, hoisted filter parsing, single-pass image list), dead training/detect/TensorRT code removed; pure-logic refactor into `core/review.py`, `core/geometry.py`, `core/export_report.py` with headless tests
 - v0.9.44: model-assisted pre-labeling (Auto-label, Ctrl+L), annotation validation/linting (Validate, Ctrl+Shift+V), and canvas undo/redo (Ctrl+Z / Ctrl+Y)
+- v0.9.45: bulk relabel — reassign one class to another across a recipe's saved labels (Tools > Bulk relabel), with dry-run preview; changed images return to the review queue. Pure logic in `core/relabel.py`, unit-tested
 
 ---
 

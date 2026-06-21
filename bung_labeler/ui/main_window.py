@@ -55,6 +55,7 @@ from bung_labeler.core.storage import (
     EXPORT_DIR,
     Recipe,
     capture_folder,
+    label_folder,
     image_label_json_path,
     list_recipes,
     load_annotations,
@@ -72,6 +73,7 @@ from bung_labeler.core.yolo_export import export_recipe_yolo, export_all_recipes
 from bung_labeler.core import review as review_logic
 from bung_labeler.core import geometry as geom
 from bung_labeler.core import export_report
+from bung_labeler.core import relabel as relabel_logic
 from bung_labeler.version import APP_TITLE
 from bung_labeler.ui.canvas import ImageCanvas
 
@@ -261,6 +263,10 @@ class MainWindow(QMainWindow):
         validate_action.setShortcut("Ctrl+Shift+V")
         validate_action.triggered.connect(self.validate_current_image)
         tools_menu.addAction(validate_action)
+
+        relabel_action = QAction("Bulk relabel class...", self)
+        relabel_action.triggered.connect(self.bulk_relabel_dialog)
+        tools_menu.addAction(relabel_action)
 
     def _scroll_panel(self, widget: QWidget, min_width: int, preferred_width: int) -> QScrollArea:
         scroll = QScrollArea()
@@ -2205,6 +2211,108 @@ class MainWindow(QMainWindow):
                 f"Found {len(issues)} issue(s):\n\n" + "\n".join(f"• {s}" for s in issues),
             )
         self.status.showMessage(f"Validation: {len(issues)} issue(s)", 6000)
+
+    def bulk_relabel_dialog(self) -> None:
+        """Rename/renumber a class across every saved label in the current recipe.
+
+        Operates on the on-disk sidecars, previews the impact first, and clears
+        the review marker on changed images so they re-enter the review queue.
+        """
+        names = [str(n) for n in (self.class_names or [])]
+        if len(names) < 2:
+            QMessageBox.information(self, "Bulk relabel", "Define at least two classes before relabeling.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Bulk relabel class (current recipe)")
+        dlg.setMinimumWidth(420)
+        layout = QVBoxLayout(dlg)
+
+        info = QLabel(
+            f"Recipe: {self.recipe.safe_name}\n"
+            "Reassign every box of one class to another across this recipe's saved labels.\n"
+            "Changed images are returned to the review queue."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        form = QFormLayout()
+        source_combo = QComboBox(); source_combo.addItems(names)
+        target_combo = QComboBox(); target_combo.addItems(names)
+        if len(names) > 1:
+            target_combo.setCurrentIndex(1)
+        form.addRow("From class", source_combo)
+        form.addRow("To class", target_combo)
+        layout.addLayout(form)
+
+        preview_label = QLabel("Click Preview to count affected labels.")
+        preview_label.setWordWrap(True)
+        layout.addWidget(preview_label)
+
+        btn_row = QHBoxLayout()
+        preview_btn = QPushButton("Preview")
+        apply_btn = QPushButton("Apply")
+        cancel_btn = QPushButton("Cancel")
+        apply_btn.setEnabled(False)
+        btn_row.addWidget(preview_btn); btn_row.addWidget(apply_btn); btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        ldir = label_folder(self.recipe)
+
+        def do_preview() -> None:
+            src = source_combo.currentText()
+            tgt = target_combo.currentText()
+            if src == tgt:
+                preview_label.setText("Source and target classes are the same; nothing to do.")
+                apply_btn.setEnabled(False)
+                return
+            report = relabel_logic.scan_relabel(
+                ldir, match_label=src, new_label=tgt, new_class_id=names.index(tgt)
+            )
+            if report["boxes"] == 0:
+                preview_label.setText(f"No '{src}' labels found in this recipe.")
+                apply_btn.setEnabled(False)
+            else:
+                preview_label.setText(
+                    f"Will change {report['boxes']} box(es) across {report['images']} image(s) "
+                    f"from '{src}' to '{tgt}'.\nThose images will be marked needs-review."
+                )
+                apply_btn.setEnabled(True)
+
+        def do_apply() -> None:
+            src = source_combo.currentText()
+            tgt = target_combo.currentText()
+            if src == tgt:
+                return
+            reply = QMessageBox.question(
+                dlg, "Bulk relabel",
+                f"Relabel all '{src}' to '{tgt}' in recipe {self.recipe.safe_name}?\n\n"
+                "This edits saved label files and cannot be undone from the canvas.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+            report = relabel_logic.apply_relabel(
+                ldir, match_label=src, new_label=tgt, new_class_id=names.index(tgt)
+            )
+            dlg.accept()
+            self._reset_recipe_image_index()
+            self._refresh_images(force=True)
+            self._update_dataset_summary()
+            if self.current_image_path and Path(self.current_image_path).exists():
+                self._load_image_path(Path(self.current_image_path))
+            self.status.showMessage(
+                f"Relabeled {report['boxes']} box(es) across {report['images']} image(s); marked needs-review.",
+                8000,
+            )
+
+        preview_btn.clicked.connect(do_preview)
+        apply_btn.clicked.connect(do_apply)
+        cancel_btn.clicked.connect(dlg.reject)
+        # Re-preview whenever the selection changes so Apply reflects current choice.
+        source_combo.currentIndexChanged.connect(lambda _i: apply_btn.setEnabled(False))
+        target_combo.currentIndexChanged.connect(lambda _i: apply_btn.setEnabled(False))
+        dlg.exec()
 
     def undo_canvas(self) -> None:
         if not self.canvas.undo():
