@@ -70,13 +70,15 @@ from bung_labeler.core.storage import (
     infer_role_and_layout,
 )
 from bung_labeler.core.yolo_export import export_recipe_yolo, export_all_recipes_yolo, export_recipe_obb, export_all_recipes_obb
+from bung_labeler.core import review as review_logic
+from bung_labeler.version import APP_TITLE
 from bung_labeler.ui.canvas import ImageCanvas
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("BungVision Label Studio v0.9.43")
+        self.setWindowTitle(APP_TITLE)
         self.resize(1450, 850)
         self.setMinimumSize(1000, 650)
         self.setWindowFlags(self.windowFlags() | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
@@ -1515,87 +1517,27 @@ class MainWindow(QMainWindow):
                 return
 
     def _review_record(self, reason: str = "operator_review", *, force: bool = False, counts: tuple[int, int] | None = None) -> dict:
-        record = {
-            "reviewed": True,
-            "reviewed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "reviewed_by": "BungVision Label Studio v0.9.43",
-            "source": "bungvision_label_studio",
-            "tool": "BungVision Label Studio",
-            "reason": reason,
-        }
-        if force:
-            batt, bung = counts if counts is not None else self._current_label_counts()
-            expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-            record.update({
-                "forced_review": True,
-                "review_status": "forced_reviewed",
-                "forced_reason": "quantity_mismatch",
-                "battery_count": int(batt),
-                "bung_count": int(bung),
-                "expected_bungs": int(expected),
-                "warning": "Operator force-reviewed this image even though the required quantities did not match.",
-            })
-        return record
-
-    def _is_label_studio_review_marker(self, review: dict | None) -> bool:
-        if not isinstance(review, dict) or not bool(review.get("reviewed", False)):
-            return False
-        text = " ".join(
-            str(review.get(k, ""))
-            for k in ("source", "tool", "review_source", "reviewed_by", "reviewer", "app")
-        ).lower()
-        return "bungvision_label_studio" in text or "bung label studio" in text or "label studio" in text
+        counts = counts if counts is not None else self._current_label_counts()
+        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
+        return review_logic.make_review_record(reason, force=force, counts=counts, expected=int(expected))
 
     def _annotation_reviewed(self, data: dict | None) -> bool:
-        """True only for labels explicitly reviewed inside this labeler.
-
-        BungVision runtime/import JSON can contain generic fields such as
-        reviewed=true or review_status=ok/pass. Those should not count as
-        operator review for training export. Legacy v0.9.28-v0.9.30 Label
-        Studio markers are still accepted because they include reviewed_by
-        containing "BungVision Label Studio".
-        """
-        if not data:
-            return False
-        review = data.get("review") if isinstance(data, dict) else None
-        if self._is_label_studio_review_marker(review):
-            return True
-        if bool(data.get("reviewed", False)):
-            top_level_review = {
-                "reviewed": True,
-                "source": data.get("review_source") or data.get("source") or data.get("origin") or data.get("imported_from"),
-                "tool": data.get("review_tool") or data.get("tool") or data.get("app"),
-                "reviewed_by": data.get("reviewed_by"),
-            }
-            return self._is_label_studio_review_marker(top_level_review)
-        return False
+        return review_logic.annotation_reviewed(data)
 
     def _annotation_force_reviewed(self, data: dict | None) -> bool:
-        if not data or not self._annotation_reviewed(data):
-            return False
-        review = data.get("review") if isinstance(data, dict) else None
-        if isinstance(review, dict) and (
-            bool(review.get("forced_review", False))
-            or bool(review.get("force_reviewed", False))
-            or str(review.get("review_status", "")).lower() == "forced_reviewed"
-        ):
-            return True
-        return bool(data.get("forced_review", False) or data.get("force_reviewed", False))
+        return review_logic.annotation_force_reviewed(data)
 
     def _needs_review_for_image(self, path: Path, data: dict | None = None) -> bool:
         if data is None:
             data = load_annotations(path)
         if not data or not data.get("boxes"):
             return False
-        return not self._annotation_reviewed(data)
+        return not review_logic.annotation_reviewed(data)
 
     def _image_counts_from_data(self, data: dict | None) -> tuple[int, int]:
         if not data or not data.get("boxes"):
             return 0, 0
-        boxes = [self._normalize_import_box(b) for b in data.get("boxes", [])]
-        batt = sum(1 for b in boxes if str(b.get("label", "")).startswith("battery") or int(b.get("class_id", -1)) == 0)
-        bung = sum(1 for b in boxes if str(b.get("label", "")).startswith("bung") or int(b.get("class_id", -1)) == 1)
-        return batt, bung
+        return review_logic.counts_from_boxes(data.get("boxes", []))
 
     def _current_label_counts(self) -> tuple[int, int]:
         batt = sum(1 for b in self.canvas.boxes if self._box_kind(b) == "battery")
@@ -2776,85 +2718,15 @@ class MainWindow(QMainWindow):
         return boxes
 
     def _counts_from_box_dicts(self, boxes: list[dict]) -> tuple[int, int]:
-        batt = 0
-        bung = 0
-        for raw in boxes:
-            b = self._normalize_import_box(raw)
-            label = str(b.get("label", ""))
-            class_id = int(b.get("class_id", -1))
-            if label.startswith("battery") or class_id == 0:
-                batt += 1
-            elif label.startswith("bung") or class_id == 1:
-                bung += 1
-        return batt, bung
-
-    def _box_polygon_from_dict(self, box: dict) -> list[list[float]]:
-        """Return four image-space corner points for either an OBB or a plain box."""
-        pts = box.get("points") or box.get("obb") or []
-        if len(pts) >= 4:
-            return [[float(p[0]), float(p[1])] for p in pts[:4]]
-        x = float(box.get("x", 0.0))
-        y = float(box.get("y", 0.0))
-        w = float(box.get("w", 0.0))
-        h = float(box.get("h", 0.0))
-        return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
-
-    def _box_center_from_dict(self, box: dict) -> tuple[float, float]:
-        poly = self._box_polygon_from_dict(box)
-        cx = sum(p[0] for p in poly) / len(poly)
-        cy = sum(p[1] for p in poly) / len(poly)
-        return cx, cy
-
-    def _per_battery_bung_counts(self, boxes: list[dict]) -> tuple[list[int], int]:
-        """Assign each bung to the battery whose polygon contains its center.
-
-        Returns (per-battery bung counts, number of bungs outside every battery).
-        Supports any number of batteries in view, not just one.
-        """
-        batteries: list[list[list[float]]] = []
-        bung_centers: list[tuple[float, float]] = []
-        for raw in boxes:
-            b = self._normalize_import_box(raw)
-            label = str(b.get("label", ""))
-            class_id = int(b.get("class_id", -1))
-            if label.startswith("battery") or class_id == 0:
-                batteries.append(self._box_polygon_from_dict(b))
-            elif label.startswith("bung") or class_id == 1:
-                bung_centers.append(self._box_center_from_dict(b))
-
-        counts = [0] * len(batteries)
-        outside = 0
-        for cx, cy in bung_centers:
-            assigned = False
-            for i, poly in enumerate(batteries):
-                if self._point_inside_polygon(cx, cy, poly):
-                    counts[i] += 1
-                    assigned = True
-                    break
-            if not assigned:
-                outside += 1
-        return counts, outside
+        return review_logic.counts_from_boxes(boxes)
 
     def _quantities_satisfied(self, boxes: list[dict]) -> bool:
-        """Review passes without force when every battery in view holds exactly the
-        expected number of bungs, there is at least one battery, and no bung falls
-        outside all batteries. This lets multiple fully-labeled batteries pass."""
         expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-        counts, outside = self._per_battery_bung_counts(boxes)
-        if not counts or outside:
-            return False
-        return all(c == int(expected) for c in counts)
+        return review_logic.quantities_satisfied(boxes, int(expected))
 
     def _quantity_summary_text(self, boxes: list[dict]) -> str:
-        """Human-readable per-battery breakdown for review dialogs."""
         expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-        counts, outside = self._per_battery_bung_counts(boxes)
-        if not counts:
-            return f"Batteries: 0 (need at least 1)\nExpected bungs per battery: {expected}"
-        lines = [f"Battery {i + 1}: {c} / {expected} bungs" for i, c in enumerate(counts)]
-        if outside:
-            lines.append(f"Bungs outside any battery: {outside}")
-        return "\n".join(lines)
+        return review_logic.quantity_summary_text(boxes, int(expected))
 
     def mark_current_reviewed(self) -> None:
         if not self.current_image_path:
@@ -3007,31 +2879,11 @@ class MainWindow(QMainWindow):
             combo.setMinimumHeight(26)
 
     def _simple_label_from_text(self, label: str, class_id: int = -1) -> tuple[str, int]:
-        label_l = str(label or "").lower()
-        if label_l == "battery" or label_l.startswith("battery_") or int(class_id) == 0:
-            return "battery", 0
-        if label_l == "bung" or label_l.startswith("bung_") or int(class_id) == 1:
-            return "bung", 1
-        if label_l == "retainer" or label_l.startswith("retainer_") or int(class_id) == 2:
-            return "retainer", 2
-        return str(label or ""), int(class_id)
+        return review_logic.simple_label(label, class_id)
 
     def _normalize_import_box(self, box: dict) -> dict:
         """Normalize BungVision runtime JSON boxes to the editor's simple labels."""
-        original_label = str(box.get("label", "") or "")
-        original_class_id = int(box.get("class_id", -1))
-        label, class_id = self._simple_label_from_text(original_label, original_class_id)
-
-        normalized = dict(box)
-        normalized["label"] = label
-        normalized["class_id"] = class_id
-
-        if "source_label" not in normalized and original_label != label:
-            normalized["source_label"] = original_label
-        if "source_class_id" not in normalized and original_class_id != class_id:
-            normalized["source_class_id"] = original_class_id
-
-        return normalized
+        return review_logic.normalize_box(box)
 
     def _box_kind(self, box) -> str:
         label = getattr(box, "label", "") or ""

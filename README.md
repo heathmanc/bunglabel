@@ -110,6 +110,7 @@ Recommended Python versions:
 | OpenCV camera capture | `core/camera.py` | `opencv-python` |
 | Basler camera capture | `core/camera.py` | `pypylon`, Basler Pylon runtime/SDK |
 | Dataset export | `core/yolo_export.py` | Python stdlib, `PyYAML` indirectly through Ultralytics use |
+| Review / quantity logic | `core/review.py` (pure, unit-tested in `tests/test_review.py`) | Python stdlib |
 | Model test / training | `ui/main_window.py` | `ultralytics`, PyTorch stack installed by Ultralytics |
 | TensorRT export | `ui/main_window.py` | Ultralytics export dependencies, NVIDIA TensorRT runtime/tooling |
 
@@ -179,9 +180,11 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 ├── bung_labeler/
 │   ├── __init__.py
 │   ├── __main__.py
+│   ├── version.py
 │   ├── core/
 │   │   ├── camera.py
 │   │   ├── image_adjust.py
+│   │   ├── review.py
 │   │   ├── storage.py
 │   │   └── yolo_export.py
 │   └── ui/
@@ -189,6 +192,8 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 │       │   └── checkbox_check.svg
 │       ├── canvas.py
 │       └── main_window.py
+├── tests/
+│   └── test_review.py
 └── data/
     ├── camera_settings.json
     ├── class_config.json

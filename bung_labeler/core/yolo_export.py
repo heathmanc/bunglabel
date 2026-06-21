@@ -5,6 +5,7 @@ import random
 import shutil
 from pathlib import Path
 
+from .review import annotation_reviewed as _annotation_reviewed
 from .storage import CAPTURE_DIR, EXPORT_DIR, LABEL_DIR, infer_role_and_layout
 
 
@@ -29,41 +30,6 @@ def _canonical_kind(box: dict) -> str:
     if label:
         return _clean_class_token(label).lower()
     return f"class_{cls}" if cls >= 0 else "unknown"
-
-
-def _is_label_studio_review_marker(review: dict | None) -> bool:
-    if not isinstance(review, dict) or not bool(review.get("reviewed", False)):
-        return False
-    text = " ".join(
-        str(review.get(k, ""))
-        for k in ("source", "tool", "review_source", "reviewed_by", "reviewer", "app")
-    ).lower()
-    return "bungvision_label_studio" in text or "bung label studio" in text or "label studio" in text
-
-
-def _annotation_reviewed(data: dict | None) -> bool:
-    """Return True only for labels explicitly reviewed inside this labeler.
-
-    BungVision runtime/import JSON may already contain generic fields like
-    reviewed=true, review_status=ok/pass, approved, or accepted. Those are
-    not operator review markers for training. Legacy v0.9.28-v0.9.30 Label
-    Studio markers are accepted because reviewed_by contains "BungVision
-    Label Studio".
-    """
-    if not data:
-        return False
-    review = data.get("review") if isinstance(data, dict) else None
-    if _is_label_studio_review_marker(review):
-        return True
-    if bool(data.get("reviewed", False)):
-        top_level_review = {
-            "reviewed": True,
-            "source": data.get("review_source") or data.get("source") or data.get("origin") or data.get("imported_from"),
-            "tool": data.get("review_tool") or data.get("tool") or data.get("app"),
-            "reviewed_by": data.get("reviewed_by"),
-        }
-        return _is_label_studio_review_marker(top_level_review)
-    return False
 
 
 def _class_name_for_box(box: dict, recipe_safe_name: str, class_mode: str) -> str | None:
