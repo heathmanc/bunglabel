@@ -385,7 +385,7 @@ class MainWindow(QMainWindow):
 
         delete_action = QAction("Delete selected annotation", self)
         delete_action.setShortcut(QKeySequence.Delete)
-        delete_action.triggered.connect(self.canvas.delete_selected)
+        delete_action.triggered.connect(self._guarded(self.canvas.delete_selected))
         edit_menu.addAction(delete_action)
 
         delete_image_action = QAction("Delete captured image", self)
@@ -415,27 +415,27 @@ class MainWindow(QMainWindow):
 
         battery_action = QAction("Class: battery", self)
         battery_action.setShortcut("B")
-        battery_action.triggered.connect(lambda: self.set_class_by_name("battery"))
+        battery_action.triggered.connect(self._guarded(lambda: self.set_class_by_name("battery")))
         class_menu.addAction(battery_action)
 
         bung_action = QAction("Class: bung", self)
         bung_action.setShortcut("U")
-        bung_action.triggered.connect(lambda: self.set_class_by_name("bung"))
+        bung_action.triggered.connect(self._guarded(lambda: self.set_class_by_name("bung")))
         class_menu.addAction(bung_action)
 
         retainer_action = QAction("Class: retainer", self)
         retainer_action.setShortcut("R")
-        retainer_action.triggered.connect(lambda: self.set_class_by_name("retainer"))
+        retainer_action.triggered.connect(self._guarded(lambda: self.set_class_by_name("retainer")))
         class_menu.addAction(retainer_action)
 
         next_action = QAction("Next image", self)
         next_action.setShortcut("N")
-        next_action.triggered.connect(self.next_image)
+        next_action.triggered.connect(self._guarded(self.next_image))
         nav_menu.addAction(next_action)
 
         prev_action = QAction("Previous image", self)
         prev_action.setShortcut("P")
-        prev_action.triggered.connect(self.previous_image)
+        prev_action.triggered.connect(self._guarded(self.previous_image))
         nav_menu.addAction(prev_action)
 
         unreviewed_action = QAction("Find next unreviewed", self)
@@ -455,7 +455,7 @@ class MainWindow(QMainWindow):
 
         capture_action = QAction("Capture adjusted", self)
         capture_action.setShortcut("C")
-        capture_action.triggered.connect(lambda: self.capture_frame(save_adjusted=True))
+        capture_action.triggered.connect(self._guarded(lambda: self.capture_frame(save_adjusted=True)))
         capture_menu.addAction(capture_action)
 
         auto_label_action = QAction("Auto-label current (model)", self)
@@ -493,10 +493,46 @@ class MainWindow(QMainWindow):
         shortcuts_action.setShortcut("F1")
         shortcuts_action.triggered.connect(self.show_shortcuts_reference)
         tools_menu.addAction(shortcuts_action)
-        # Keep F1 working even though the menu bar is hidden.
-        self.addAction(shortcuts_action)
+
+        # The menu bar is hidden (see below), and Qt does NOT dispatch the
+        # shortcuts of actions that live only inside a hidden menu bar. Register
+        # every shortcut action on the window itself so the keys keep working.
+        for action in (
+            undo_action, redo_action, open_action, save_action,
+            delete_action, delete_image_action,
+            zoom_in_action, zoom_out_action, fit_action, refresh_index_action,
+            battery_action, bung_action, retainer_action,
+            next_action, prev_action,
+            unreviewed_action, mark_reviewed_action, force_review_action,
+            capture_action, auto_label_action, validate_action,
+            next_queue_action, shortcuts_action,
+        ):
+            self.addAction(action)
 
         self.menuBar().setVisible(False)
+
+    def _typing_in_text_field(self) -> bool:
+        """True when a text-entry widget has focus.
+
+        Single-letter shortcuts (B/U/R/N/P/C) use the window-wide shortcut
+        context, so without this guard they would steal keystrokes while the
+        user is typing into a run-name / filter / device field.
+        """
+        from PySide6.QtWidgets import QAbstractSpinBox, QComboBox
+        w = QApplication.focusWidget()
+        if isinstance(w, (QLineEdit, QTextEdit, QSpinBox, QAbstractSpinBox)):
+            return True
+        if isinstance(w, QComboBox) and w.isEditable():
+            return True
+        return False
+
+    def _guarded(self, fn):
+        """Wrap a single-key shortcut slot so it no-ops while typing in a field."""
+        def runner(*_args):
+            if self._typing_in_text_field():
+                return
+            fn()
+        return runner
 
     def _scroll_panel(self, widget: QWidget, min_width: int, preferred_width: int) -> QScrollArea:
         scroll = QScrollArea()
