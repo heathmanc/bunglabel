@@ -396,12 +396,14 @@ def export_all_recipes_obb(
     split_train: float = 0.8,
     class_mode: str = "label_names",
     reviewed_only: bool = True,
+    recipe_names: list[str] | None = None,
 ) -> Path:
     reviewed_only = True
-    recipe_names = sorted(
-        {p.name for p in CAPTURE_DIR.iterdir() if p.is_dir()}
-        | {p.name for p in LABEL_DIR.iterdir() if p.is_dir()}
-    )
+    if recipe_names is None:
+        recipe_names = sorted(
+            {p.name for p in CAPTURE_DIR.iterdir() if p.is_dir()}
+            | {p.name for p in LABEL_DIR.iterdir() if p.is_dir()}
+        )
 
     all_entries = []
     for recipe_safe_name in recipe_names:
@@ -455,12 +457,14 @@ def export_all_recipes_yolo(
     split_train: float = 0.8,
     class_mode: str = "model_specific",
     reviewed_only: bool = True,
+    recipe_names: list[str] | None = None,
 ) -> Path:
     reviewed_only = True
-    recipe_names = sorted(
-        {p.name for p in CAPTURE_DIR.iterdir() if p.is_dir()}
-        | {p.name for p in LABEL_DIR.iterdir() if p.is_dir()}
-    )
+    if recipe_names is None:
+        recipe_names = sorted(
+            {p.name for p in CAPTURE_DIR.iterdir() if p.is_dir()}
+            | {p.name for p in LABEL_DIR.iterdir() if p.is_dir()}
+        )
 
     all_entries = []
     for recipe_safe_name in recipe_names:

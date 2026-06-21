@@ -206,7 +206,13 @@ def per_battery_bung_counts(boxes: list[dict]) -> tuple[list[int], int]:
 def quantities_satisfied(boxes: list[dict], expected: int) -> bool:
     """Review passes without force when every battery in view holds exactly the
     expected number of bungs, there is at least one battery, and no bung falls
-    outside all batteries. This lets multiple fully-labeled batteries pass."""
+    outside all batteries. This lets multiple fully-labeled batteries pass.
+
+    ``expected <= 0`` unlocks the recipe from the battery/bung constraint
+    (free-form labeling): any non-empty set of labels passes review, so the
+    tool can be used for arbitrary object classes."""
+    if int(expected) <= 0:
+        return bool(boxes)
     counts, outside = per_battery_bung_counts(boxes)
     if not counts or outside:
         return False
@@ -215,6 +221,8 @@ def quantities_satisfied(boxes: list[dict], expected: int) -> bool:
 
 def quantity_summary_text(boxes: list[dict], expected: int) -> str:
     """Human-readable per-battery breakdown for review dialogs."""
+    if int(expected) <= 0:
+        return f"Free-form labeling (battery/bung check disabled).\nLabels on this image: {len(boxes)}"
     counts, outside = per_battery_bung_counts(boxes)
     if not counts:
         return f"Batteries: 0 (need at least 1)\nExpected bungs per battery: {expected}"
@@ -267,6 +275,11 @@ def validate_boxes(
         for j in range(i + 1, len(bungs)):
             if rect_iou(bung_bounds[i], bung_bounds[j]) > overlap_iou:
                 issues.append(f"Bungs #{i + 1} and #{j + 1} overlap heavily (possible duplicate)")
+
+    # Free-form recipes (expected <= 0) are unlocked from the battery/bung
+    # quantity and containment rules; only the geometry checks above apply.
+    if int(expected) <= 0:
+        return issues
 
     counts, outside = per_battery_bung_counts(boxes)
     if not counts:

@@ -133,6 +133,26 @@ def test_validate_no_battery():
     assert any("No battery" in s for s in issues)
 
 
+def test_unconstrained_quantities_satisfied_for_any_labels():
+    # expected <= 0 unlocks the battery/bung check: any labels pass, none fail empty.
+    assert r.quantities_satisfied([{"label": "widget", "class_id": 5, "x": 0, "y": 0, "w": 4, "h": 4}], 0)
+    assert r.quantities_satisfied([_bung(10, 10)], 0)
+    assert not r.quantities_satisfied([], 0)
+
+
+def test_unconstrained_summary_mentions_free_form():
+    text = r.quantity_summary_text([_bung(10, 10)], 0)
+    assert "Free-form" in text
+
+
+def test_unconstrained_validate_skips_battery_checks_but_keeps_geometry():
+    # A lone bung would normally trigger "No battery"; unconstrained skips it.
+    assert not any("No battery" in s for s in r.validate_boxes([_bung(10, 10)], 500, 500, 0))
+    # Geometry checks still fire (degenerate box).
+    tiny = {"label": "widget", "class_id": 5, "x": 0, "y": 0, "w": 1, "h": 1}
+    assert any("degenerate" in s for s in r.validate_boxes([tiny], 500, 500, 0))
+
+
 if __name__ == "__main__":
     import traceback
 
