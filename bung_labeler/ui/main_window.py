@@ -97,11 +97,11 @@ from bung_labeler.ui.canvas import ImageCanvas
 
 
 class TrainingMetricsChart(QWidget):
-    """Multi-series line chart for live training metrics with numbered axes.
+    """Multi-series line chart for live training metrics with dual Y axes.
 
-    Losses and mAP share one autoscaled Y axis (both sit in a roughly 0-3 band),
-    so the Y axis can carry real numbers; the X axis is the epoch number. The
-    legend shows each series' latest value.
+    Losses are plotted against an autoscaled left Y axis; mAP metrics against a
+    0-1 right Y axis.  Both axes are numbered and the X axis is the epoch number.
+    The legend shows each series' latest value.
     """
 
     _COLORS = {
@@ -161,9 +161,15 @@ class TrainingMetricsChart(QWidget):
             return
 
         fm = p.fontMetrics()
-        # Margins: room for y labels (left), x labels (bottom), legend (top).
+
+        # Split series across two Y axes: losses on the left, mAP/metrics on the
+        # right (0-1 band).  Either axis is omitted if it has no series yet.
+        loss_series = {k: v for k, v in self._series.items() if "loss" in k.lower()}
+        metric_series = {k: v for k, v in self._series.items() if "loss" not in k.lower()}
+
+        # Margins: leave room for a right Y axis only when there are metrics.
         left = 52
-        right = 12
+        right = 52 if metric_series else 14
         top = 22
         bottom = 24
         plot = QRectF(
@@ -172,15 +178,20 @@ class TrainingMetricsChart(QWidget):
             max(1, full.height() - top - bottom),
         )
 
-        # Shared Y range across all series, padded slightly; always include 0.
-        all_vals = [v for s in self._series.values() for v in s]
-        ymin = min(0.0, min(all_vals))
-        ymax = max(all_vals)
-        if ymax <= ymin:
-            ymax = ymin + 1.0
-        pad = (ymax - ymin) * 0.05
-        ymin -= pad if ymin < 0 else 0.0
-        ymax += pad
+        def axis_range(vals: list[float], include_zero: bool, floor_max: float | None) -> tuple[float, float]:
+            lo = min(vals)
+            hi = max(vals)
+            if include_zero:
+                lo = min(0.0, lo)
+            if floor_max is not None:
+                hi = max(hi, floor_max)
+            if hi <= lo:
+                hi = lo + 1.0
+            return lo, hi + (hi - lo) * 0.05
+
+        lmin, lmax = axis_range([v for s in loss_series.values() for v in s] or [0.0, 1.0], True, None)
+        # mAP lives in 0-1; keep that fixed range unless a value somehow exceeds 1.
+        rmin, rmax = axis_range([v for s in metric_series.values() for v in s] or [0.0, 1.0], True, 1.0)
 
         # X range from epoch numbers.
         emin = self._epochs[0] if self._epochs else 1.0
@@ -191,21 +202,30 @@ class TrainingMetricsChart(QWidget):
         def px(epoch: float) -> float:
             return plot.left() + (epoch - emin) / (emax - emin) * plot.width()
 
-        def py(val: float) -> float:
-            return plot.bottom() - (val - ymin) / (ymax - ymin) * plot.height()
+        def py(val: float, lo: float, hi: float) -> float:
+            return plot.bottom() - (val - lo) / (hi - lo) * plot.height()
 
-        # --- Y axis ticks + gridlines ---
-        p.setPen(QPen(QColor(self._TEXT)))
+        def py_left(val: float) -> float:
+            return py(val, lmin, lmax)
+
+        def py_right(val: float) -> float:
+            return py(val, rmin, rmax)
+
+        # --- Y ticks + gridlines (shared y positions; left + right labels) ---
         y_ticks = 5
         for i in range(y_ticks + 1):
-            val = ymin + (ymax - ymin) * i / y_ticks
-            y = py(val)
+            frac = i / y_ticks
+            y = plot.bottom() - frac * plot.height()
             p.setPen(QPen(QColor(self._GRID), 1))
             p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
-            p.setPen(QColor(self._TEXT))
-            label = self._fmt(val)
-            p.drawText(QRectF(full.left(), y - 8, left - 6, 16),
-                       Qt.AlignRight | Qt.AlignVCenter, label)
+            if loss_series:
+                p.setPen(QColor(self._TEXT))
+                p.drawText(QRectF(full.left(), y - 8, left - 6, 16),
+                           Qt.AlignRight | Qt.AlignVCenter, self._fmt(lmin + (lmax - lmin) * frac))
+            if metric_series:
+                p.setPen(QColor(self._COLORS.get("mAP50", self._TEXT)))
+                p.drawText(QRectF(plot.right() + 4, y - 8, right - 6, 16),
+                           Qt.AlignLeft | Qt.AlignVCenter, self._fmt(rmin + (rmax - rmin) * frac))
 
         # --- X axis ticks (epoch numbers) ---
         n_epochs = len(self._epochs)
@@ -213,30 +233,39 @@ class TrainingMetricsChart(QWidget):
         for i in range(x_ticks):
             frac = i / (x_ticks - 1) if x_ticks > 1 else 0.0
             epoch = emin + (emax - emin) * frac
-            x = px(epoch)
             p.setPen(QColor(self._TEXT))
-            p.drawText(QRectF(x - 24, plot.bottom() + 4, 48, 16),
+            p.drawText(QRectF(px(epoch) - 24, plot.bottom() + 4, 48, 16),
                        Qt.AlignCenter, str(int(round(epoch))))
 
         # Axis lines.
         p.setPen(QPen(QColor(self._AXIS), 1))
         p.drawLine(QPointF(plot.left(), plot.top()), QPointF(plot.left(), plot.bottom()))
         p.drawLine(QPointF(plot.left(), plot.bottom()), QPointF(plot.right(), plot.bottom()))
-        # X axis caption.
+        if metric_series:
+            p.drawLine(QPointF(plot.right(), plot.top()), QPointF(plot.right(), plot.bottom()))
+        # Captions: epoch (x), and which side is which.
         p.setPen(QColor(self._TEXT))
         p.drawText(QRectF(plot.left(), full.bottom() - 14, plot.width(), 14),
-                   Qt.AlignRight | Qt.AlignVCenter, "epoch")
+                   Qt.AlignCenter, "epoch")
+        if loss_series:
+            p.drawText(QRectF(full.left(), full.top() + 2, left + 30, 14),
+                       Qt.AlignLeft | Qt.AlignVCenter, "loss ↓")
+        if metric_series:
+            p.setPen(QColor(self._COLORS.get("mAP50", self._TEXT)))
+            p.drawText(QRectF(plot.right() - 30, full.top() + 2, right + 30, 14),
+                       Qt.AlignRight | Qt.AlignVCenter, "mAP ↑")
 
         # --- Series lines ---
-        legend_x = plot.left()
+        legend_x = plot.left() + 36
         legend_y = full.top() + 14
         for name, values in self._series.items():
             color = QColor(self._COLORS.get(name, self._DEFAULT))
+            ymap = py_right if name in metric_series else py_left
             p.setPen(QPen(color, 2))
             prev = None
             for i, val in enumerate(values):
                 epoch = self._epochs[i] if i < len(self._epochs) else float(i + 1)
-                pt = QPointF(px(epoch), py(val))
+                pt = QPointF(px(epoch), ymap(val))
                 if prev is not None:
                     p.drawLine(prev, pt)
                 else:
