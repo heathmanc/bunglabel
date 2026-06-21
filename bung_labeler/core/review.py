@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 
 from ..version import APP_TITLE
+from .geometry import point_in_polygon
 
 _REVIEW_MARKER_KEYS = ("source", "tool", "review_source", "reviewed_by", "reviewer", "app")
 
@@ -157,22 +158,6 @@ def box_center(box: dict) -> tuple[float, float]:
     cx = sum(p[0] for p in poly) / len(poly)
     cy = sum(p[1] for p in poly) / len(poly)
     return cx, cy
-
-
-def point_in_polygon(x: float, y: float, poly: list[list[float]]) -> bool:
-    """Ray-casting point-in-polygon test. Pure Python so it needs no OpenCV."""
-    n = len(poly)
-    if n < 3:
-        return False
-    inside = False
-    j = n - 1
-    for i in range(n):
-        xi, yi = float(poly[i][0]), float(poly[i][1])
-        xj, yj = float(poly[j][0]), float(poly[j][1])
-        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi):
-            inside = not inside
-        j = i
-    return inside
 
 
 # --- quantity checks ------------------------------------------------------

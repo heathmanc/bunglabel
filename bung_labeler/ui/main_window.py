@@ -71,6 +71,7 @@ from bung_labeler.core.storage import (
 )
 from bung_labeler.core.yolo_export import export_recipe_yolo, export_all_recipes_yolo, export_recipe_obb, export_all_recipes_obb
 from bung_labeler.core import review as review_logic
+from bung_labeler.core import geometry as geom
 from bung_labeler.version import APP_TITLE
 from bung_labeler.ui.canvas import ImageCanvas
 
@@ -2160,8 +2161,7 @@ class MainWindow(QMainWindow):
 
     def _point_inside_polygon(self, x: float, y: float, poly: list[list[float]]) -> bool:
         try:
-            pts = np.array(poly, dtype=np.float32).reshape(-1, 2)
-            return cv2.pointPolygonTest(pts, (float(x), float(y)), False) >= 0
+            return geom.point_in_polygon(x, y, poly)
         except Exception:
             return False
 
@@ -2311,35 +2311,10 @@ class MainWindow(QMainWindow):
         self.test_results_text.setPlainText("\n".join(summary))
         self.status.showMessage(f"Count test {final}: {pass_count} pass, {fail_count} fail", 7000)
     def _normalize_angle_deg(self, angle: float) -> float:
-        """Normalize an image-space angle to [-90, 90) degrees for readable skew."""
-        while angle >= 90.0:
-            angle -= 180.0
-        while angle < -90.0:
-            angle += 180.0
-        return angle
+        return geom.normalize_angle_deg(angle)
 
-    def _polygon_long_edge_angle(self, pts: np.ndarray) -> tuple[float | None, float]:
-        """Return the angle of the longest edge and its length from a 4-point OBB polygon.
-
-        Ultralytics xywhr angles can appear wrong for long rectangular parts because
-        the model/formatter may swap width/height or use a different angle convention.
-        For a battery, the useful plant-floor angle is usually the long-edge skew, so
-        compute it directly from the drawn polygon.
-        """
-        if pts is None or len(pts) < 4:
-            return None, 0.0
-        best_angle = None
-        best_len = 0.0
-        for i in range(4):
-            p1 = pts[i].astype(float)
-            p2 = pts[(i + 1) % 4].astype(float)
-            dx = float(p2[0] - p1[0])
-            dy = float(p2[1] - p1[1])
-            length = math.hypot(dx, dy)
-            if length > best_len:
-                best_len = length
-                best_angle = self._normalize_angle_deg(math.degrees(math.atan2(dy, dx)))
-        return best_angle, best_len
+    def _polygon_long_edge_angle(self, pts) -> tuple[float | None, float]:
+        return geom.polygon_long_edge_angle(pts)
 
     def _battery_box_overlay_items(self, results) -> tuple[list[dict], int, list[str]]:
         """Convert normal YOLO detect box results into temporary canvas overlay items."""
