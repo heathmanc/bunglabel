@@ -1,7 +1,0 @@
-# v0.9.10 - Count Class Match Fix
-
-- Fixed Run Count class filtering when Ultralytics exposes model names as a list/tuple instead of a dict.
-- Count class filter now supports forgiving partial matches, so `bung` matches `bung`, `bungs`, `rubber_bung`, and `bung_cap`.
-- Run Count still supports numeric class IDs such as `0`.
-- Added a warning when detections exist but none match the Count class filter.
-- Run Count now keeps detection class names consistent with Run Models.

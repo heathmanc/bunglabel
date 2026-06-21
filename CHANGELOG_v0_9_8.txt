@@ -1,9 +1,0 @@
-v0.9.8 - Count-only UI cleanup
-
-- Removed stale bytecode cache from package to prevent old UI from appearing.
-- Window title now shows v0.9.8 - COUNT ONLY for easy verification.
-- Test Models title now states Count Test only.
-- Renamed Export Recipe to Export Dataset to avoid confusion.
-- Forced QPainter NoBrush before all saved annotation and model-test shape drawing.
-- OBB corner handles are outline-only.
-- Model overlay battery polygon is outline-only.

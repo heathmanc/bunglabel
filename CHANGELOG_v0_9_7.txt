@@ -1,6 +1,0 @@
-Bung Labeling Tool v0.9.7 - Count UI cleanup
-
-- Removed leftover Pattern wording from Test Models instructions.
-- Confirmed the Test Models tab only exposes Run Models and Run Count.
-- Model-test overlays now use outline-only shapes for detected classes and center markers.
-- Legacy OpenCV preview helpers were also changed to outline-only circles.
