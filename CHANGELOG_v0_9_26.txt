@@ -1,0 +1,27 @@
+BungVision Label Studio v0.9.26 - OBB battery + bung adaptation
+
+Baseline:
+- Built from v0.9.25 plain-class startup fix.
+- Preserves Basler open/capture fixes, manual/auto exposure controls, right-panel button spacing, and the removal of the bung-zone concept.
+
+Changes:
+- Converted the labeling workflow to YOLO OBB for both batteries and bungs.
+- Default classes now use:
+  - battery: OBB / 4-corner tool
+  - bung: OBB / 4-corner tool
+  - retainer/custom classes: Box fallback unless inferred as battery/bung.
+- Existing class configs are migrated so battery/bung default back to OBB even if v0.9.25 saved them as BOX.
+- Added OBB / 4-corner tool selection in the annotation panel.
+- OBB drawing creates a 4-corner polygon; corner handles can be dragged after drawing.
+- Export panel now defaults to OBB dataset for batteries + bungs.
+- Added OBB export for all labeled classes, not just battery.
+- OBB export writes standard YOLO OBB labels:
+  class x1 y1 x2 y2 x3 y3 x4 y4
+- Legacy box labels can still be exported as zero-rotation OBB rectangles for compatibility.
+- Detect box export remains available as a compatibility fallback.
+- Model Test / Count Test text and overlays now support OBB batteries and OBB bungs.
+- Count Test now counts bung centers inside battery polygons instead of relying on axis-aligned battery boxes.
+
+Notes:
+- The old battery_6row / battery_2x3 zone-class concept remains removed.
+- For the new BungVision OBB runtime, train with a YOLO OBB model such as yolo11n-obb.pt / yolo11s-obb.pt and task=obb.

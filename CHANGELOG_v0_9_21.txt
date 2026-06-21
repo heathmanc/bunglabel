@@ -1,0 +1,8 @@
+BungVision Label Studio v0.9.21 - Class Zone Layout Fix
+
+- Fixed the right-side panel spacing after v0.9.20.
+- Moved 6-in-row / 2x3 selection into a dedicated Battery Classes / Zone Layout section.
+- Added default battery_6row and battery_2x3 classes so the layout choices are visible in the Class dropdown immediately.
+- Battery class creation now appends _6row or _2x3 to the class name when needed so BungVision v0.9.15 can infer zone layout from the exported YOLO class name.
+- Other custom classes are kept separate from battery classes to avoid accidentally creating non-zone battery labels.
+- Preserved standard YOLO detect export and v0.9.19 capture/JSON safety behavior.

@@ -1,0 +1,19 @@
+BungVision Label Studio v0.9.24 - Manual Exposure + Plain Classes
+
+Based on v0.9.23 right-panel button fix.
+
+Changes:
+- Added camera exposure controls on the Camera / Stream tab:
+  - Auto exposure checkbox
+  - Manual exposure entry in microseconds
+  - Apply Exposure button for the currently open camera
+- Basler/Pylon exposure support:
+  - Auto exposure uses ExposureAuto where supported
+  - Manual exposure sets ExposureAuto Off and writes ExposureTime/ExposureTimeAbs
+- OpenCV/V4L2 exposure support is best-effort through CAP_PROP_AUTO_EXPOSURE and CAP_PROP_EXPOSURE.
+- Removed the battery layout workflow from the right panel.
+- Removed 6-in-row and 2x3 default helper classes.
+- Removed canvas layout guide drawing so boxes are plain YOLO detection boxes again.
+- Simplified Custom Classes back to normal class creation.
+- Preserved the v0.9.22 Basler open-path fix.
+- Preserved the v0.9.23 right-panel scroll/button spacing fix.

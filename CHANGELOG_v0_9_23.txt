@@ -1,0 +1,18 @@
+BungVision Label Studio v0.9.23 - Right Panel Button Layout Fix
+
+Baseline:
+- Built directly from bung_labeling_tool_v0_9_22_basler_open_fix.zip.
+- Preserves the v0.9.21 class/zone layout baseline and the v0.9.22 Basler open-preview fix.
+
+Fixes:
+- Reworked the right-side Annotation button area to avoid severe overlap/clipping on Linux/Qt themes.
+- Replaced the cramped annotation QGridLayout with explicit horizontal button rows.
+- Right-panel action buttons now use fixed heights and expanding widths instead of global minimum widths that can fight the rail width.
+- Wrapped the right-side panel in a vertical scroll area so the Battery Classes, Other Custom Classes, and Export sections do not force the Annotation buttons to compress or overlap on shorter windows.
+- Increased the right rail preferred width slightly while keeping the image canvas dominant.
+
+No intended changes:
+- No camera backend changes.
+- No Basler test/open logic changes.
+- No YOLO export behavior changes.
+- No class/zone metadata behavior changes.

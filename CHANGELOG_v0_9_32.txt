@@ -1,0 +1,9 @@
+BungVision Label Studio v0.9.32 - Launcher / Module Name Fix
+
+- Added compatibility shim for accidental old launch commands using python -m bung-labeler.
+- Added package entry point support for python -m bung_labeler.
+- Added run_label_studio.bat and run_label_studio.sh launchers.
+- Added missing core/ui __init__.py files for stricter Python/import environments.
+- Removed stale __pycache__ folders from the packaged zip.
+- Preserved v0.9.31 strict Label-Studio-reviewed-only export behavior.
+- Preserved OBB battery + OBB bung workflow, Basler fixes, exposure controls, and UI polish.

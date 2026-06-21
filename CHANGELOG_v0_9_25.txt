@@ -1,0 +1,8 @@
+BungVision Label Studio v0.9.25 - PLAIN CLASS STARTUP FIX
+
+- Fixed startup crash: ImageCanvas has no attribute set_class_layouts.
+- Removed the last stale zone-layout canvas call left over from the removed bung-zone workflow.
+- Preserved v0.9.24 manual/auto exposure controls.
+- Preserved v0.9.23 right-panel button spacing/scroll behavior.
+- Preserved v0.9.22 Basler open-path fix.
+- Labeling remains plain YOLO detection classes: battery, bung, retainer, plus custom classes.

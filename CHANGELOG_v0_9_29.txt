@@ -1,0 +1,17 @@
+BungVision Label Studio v0.9.29 - Reviewed-Only Export Default
+
+Changes:
+- Export now defaults to reviewed labeled images only.
+- Added an explicit "Export reviewed images only" checkbox in the Export section.
+- Unreviewed BungVision-imported JSON labels are skipped unless that checkbox is turned off intentionally.
+- Export warnings now say when no reviewed labeled images are available.
+- Training auto-rebuild uses the same reviewed-only export filter by default.
+- Exported datasets include review_filter.txt showing whether the dataset was built from reviewed-only or all labeled images.
+
+Preserved:
+- OBB battery + OBB bung workflow.
+- Review status/list filter workflow from v0.9.28.
+- Basler/Pylon open/capture fixes.
+- Manual/auto exposure controls.
+- UI polish and checkbox contrast from v0.9.27.
+- No bung-zone concept.

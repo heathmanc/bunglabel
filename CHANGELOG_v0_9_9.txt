@@ -1,0 +1,7 @@
+v0.9.9 - Count class filtering fix
+
+- Fixed Run Count using a fallback class name of bung for every detection.
+- Detection overlays now carry model class name, class ID, and confidence.
+- Run Count filters by detection model names/IDs instead of the labeling-project class map.
+- Added detection class count summary for debugging mixed-class models.
+- Window title updated to v0.9.9 - COUNT CLASS FIX.

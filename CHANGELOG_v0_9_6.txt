@@ -1,0 +1,16 @@
+Bung Labeling Tool v0.9.6 - Rotation-aware count test simplification
+
+- Removed the experimental Pattern Recipe tab from the UI.
+- Removed Pattern Test controls from the Test Models tab.
+- Added Run Count.
+- Run Count uses Battery OBB polygons to count bung centers inside each detected battery.
+- Added Required count setting.
+- Added Count class filter so future classes like terminal/label/cap do not count as bungs.
+- Changed model-test bung overlays to outlines instead of filled green shapes.
+- Count overlay colors:
+  - Blue = battery OBB count region
+  - Green outline = counted bung
+  - Yellow outline = bung outside all batteries
+  - Gray outline = ignored non-count class
+
+OBB remains useful because it provides a rotated battery region for count filtering without requiring fragile front/back pattern orientation logic.

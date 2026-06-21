@@ -1,0 +1,7 @@
+BungVision Label Studio v0.9.19 - Capture Field Polish
+
+- Replaced Width, Height, and FPS spinboxes on the Live Capture tab with compact plain text entry fields.
+- Removed up/down ticker arrows from the resolution fields because capture resolution is manually typed.
+- Changed new recipe default capture resolution from 1280x720 to 2592x1944.
+- Added concise one-line descriptions directly to each Camera Options checkbox.
+- Preserved v0.9.18 capture panel width tuning and all previous fixes.

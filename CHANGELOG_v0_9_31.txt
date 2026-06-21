@@ -1,0 +1,9 @@
+BungVision Label Studio v0.9.31 - Strict Reviewed Export Fix
+
+- Fixed reviewed-only export being too permissive for BungVision-imported JSON.
+- Generic imported fields such as reviewed=true, review_status=ok/approved/accepted no longer count as reviewed.
+- Only images saved or marked reviewed inside BungVision Label Studio are eligible for export/training.
+- Added explicit review_source/review_tool markers to newly reviewed JSON sidecars.
+- Preserved legacy Label Studio review markers from v0.9.28-v0.9.30 using reviewed_by = BungVision Label Studio.
+- Kept OBB battery + bung workflow, Basler exposure/open fixes, and UI polish.
+- Start Training now rebuilds app-generated export folders before launching YOLO so stale train/val folders from prior versions cannot be reused accidentally.

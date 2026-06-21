@@ -1,0 +1,13 @@
+BungVision Label Studio v0.9.14
+
+Fixes:
+- Restored a clear image-list indicator for whether each image has a matching saved .json label file.
+  - ✓ JSON OK: saved JSON exists and matches expected battery/bung counts.
+  - ⚠ JSON CHECK: saved JSON exists but counts need review.
+  - ◇ JSON EMPTY: saved JSON exists but has no boxes.
+  - □ NO JSON: no saved JSON exists for that image.
+- Changed the annotation edit buttons to make destructive behavior explicit:
+  - Delete Box removes only the selected editable box.
+  - Clear Boxes clears the on-screen editable boxes only and does not overwrite/delete saved JSON.
+  - Delete Saved JSON requires confirmation and removes the matching saved .json file.
+- Fixed the prior behavior where clearing boxes could auto-save an empty label set and effectively wipe saved labels.

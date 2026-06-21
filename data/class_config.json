@@ -1,0 +1,25 @@
+{
+  "classes": [
+    {
+      "id": 0,
+      "name": "battery",
+      "default_tool": "OBB",
+      "enabled": true,
+      "role": "battery"
+    },
+    {
+      "id": 1,
+      "name": "bung",
+      "default_tool": "OBB",
+      "enabled": true,
+      "role": "bung"
+    },
+    {
+      "id": 2,
+      "name": "retainer",
+      "default_tool": "OBB",
+      "enabled": true,
+      "role": "retainer"
+    }
+  ]
+}

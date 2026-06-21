@@ -1,0 +1,17 @@
+BungVision Label Studio v0.9.22 - Basler Open Preview Fix
+
+Based on the confirmed v0.9.21 class-zone-layout baseline.
+
+Changes:
+- Fixed Open Preview using the old QSpinBox .value() call on the FPS field after FPS was changed to a plain QLineEdit.
+- Open Preview now reads FPS through the same manual-entry parser used by the width/height fields.
+- Open Preview no longer calls Save Recipe first, so the status bar no longer misleadingly says "Saved recipe" when the operator is trying to open the camera.
+- Basler/Pylon source may now be left truly blank; blank means use the first Pylon-detected Basler camera.
+- Basler/Pylon open path explicitly skips V4L2 forcing even if the V4L2 option checkbox remains checked in the UI.
+
+Preserved from v0.9.21:
+- Battery class zone-layout workflow: generic, 6row, and 2x3 battery classes.
+- Right-side class/layout spacing fix.
+- Windows/PySide6 direction.
+- Manual 2592x1944 resolution fields.
+- JSON sidecar indicators and Clear Boxes safety behavior.

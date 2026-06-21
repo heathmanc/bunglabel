@@ -1,0 +1,13 @@
+Bung Labeling Tool v0.9.11 - Basler/Pylon dropdown support
+
+Changes from v0.9.10:
+- Added visible Camera / Stream Backend dropdown option: Basler/Pylon.
+- Integrated optional pypylon support into the existing CameraSource class.
+- Basler/Pylon grabs are converted to OpenCV-compatible BGR numpy frames.
+- Existing OpenCV backends remain available: Auto, V4L2, GStreamer, FFmpeg.
+- Source field is disabled when Basler/Pylon is selected; first Pylon-detected camera is used by default.
+- Optional Source field can still be used to match a Basler serial/model/friendly name.
+- Width, Height, and FPS are attempted through Basler camera nodes when supported.
+- Camera backend is saved with recipes using new recipe field camera_backend.
+- Old recipes without camera_backend load as V4L2 for backward compatibility.
+- requirements.txt now includes pypylon.

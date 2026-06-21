@@ -1,0 +1,13 @@
+Bung Labeling Tool v0.9.5 - Pattern orientation scoring fix
+
+- Pattern Test no longer picks an orientation only by in-tolerance matches.
+- Candidate orientations now score nearest-distance error for every expected point.
+- This fixes cases where all candidates had 0 matches and the first/wrong side was selected.
+- Candidate score output now shows near=<mean nearest distance> so you can see which side/orientation is closest.
+- Still keeps axes constrained: no 90-degree axis swaps are allowed.
+
+Recommended check:
+1. Load the same recipe and test image.
+2. Run Pattern.
+3. Look at Candidate scores. The chosen candidate should have the lowest near= value when found counts are tied.
+4. If found is still 0 but near values are close, increase recipe tolerance or recreate the recipe from a well-labeled reference image.

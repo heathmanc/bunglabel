@@ -1,0 +1,13 @@
+{
+  "group": "Default",
+  "model": "Battery_Model",
+  "expected_bungs": 6,
+  "brightness": 0,
+  "contrast": 0,
+  "gamma": 1.0,
+  "clahe_enabled": false,
+  "clahe_clip": 2.0,
+  "clahe_grid": 8,
+  "sharpen": 0,
+  "notes": ""
+}

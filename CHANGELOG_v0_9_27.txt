@@ -1,0 +1,20 @@
+BungVision Label Studio v0.9.27 - OBB UI polish
+
+Built from v0.9.26 OBB battery + bung baseline.
+
+Changes:
+- Increased the left panel just enough to prevent clipped controls without returning to the oversized left rail.
+- Disabled horizontal scrolling in the Live Capture tab so controls shrink/wrap instead of disappearing off the side.
+- Moved the Exposure controls into their own compact group.
+- Made Apply Exposure a full-width button under the manual exposure field instead of squeezing it into a crowded row.
+- Made the Live Capture image action buttons full-width vertical buttons.
+- Changed the Test Models action buttons from a four-button row to a 2x2 grid.
+- Added high-contrast checkbox indicators for the dark theme so unchecked outlines are visible.
+- Slightly reduced default button minimum-width pressure so rows are less likely to clip on Linux/Qt themes.
+
+Preserved:
+- OBB battery + OBB bung labeling workflow.
+- Basler/Pylon open/capture path.
+- Manual/auto exposure logic.
+- Plain class workflow with no bung zones.
+- Existing right-panel scroll/button sizing fixes.

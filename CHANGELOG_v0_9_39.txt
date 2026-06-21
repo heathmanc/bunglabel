@@ -1,0 +1,6 @@
+BungVision Label Studio v0.9.39 - Expected Count Spinbox Fix
+
+- Fixed expected bung count spinbox arrow usability on the dark Qt theme.
+- Explicitly configures expected/count spinboxes with Up/Down arrow buttons, single-step behavior, acceleration, and wider click targets.
+- Applies the same spinbox arrow styling to other numeric spinboxes so the controls remain visible and clickable.
+- Preserves v0.9.38 custom-class OBB default/tool selection behavior.

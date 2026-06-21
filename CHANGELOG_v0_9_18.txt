@@ -1,0 +1,8 @@
+BungVision Label Studio v0.9.18 - Capture Width Tuning
+
+- Reduced the Live Capture left panel width after v0.9.17 overcorrected.
+- Left panel now has a practical min/max range instead of taking excessive screen space.
+- Width and Height spinboxes are fixed to compact numeric widths.
+- FPS and Preview scale controls are fixed to compact widths.
+- Removed stretch behavior that made the Format row consume too much horizontal space.
+- Kept previous fixes: JSON status indicators, safe Clear Boxes, Delete Saved JSON, custom classes, and standard YOLO box detection export.

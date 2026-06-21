@@ -1,0 +1,16 @@
+BungVision Label Studio v0.9.37 - Single Model Filter + Review Safety
+
+Baseline: uploaded bung-labeler-5ffe521.zip / v0.9.36 lineage.
+
+Changes:
+- Added explicit Battery class filter in Test Models / Run Count settings.
+  - Default: battery,0
+- Changed default Count class filter to bung,1.
+- Single-model OBB test/count now filters detections by model class before assigning overlays/counts.
+  - Battery overlays/count regions only use the configured battery class filter.
+  - Bung overlays/count candidates only use the configured count class filter.
+  - Retainer or other classes are no longer treated as battery or bung by accident.
+- Added review-safety behavior for normal Save Labels.
+  - If a previously reviewed image is edited into a quantity mismatch, normal Save Labels clears the old Label Studio review marker.
+  - Mismatch images require Force Review Current to remain eligible for reviewed-only export/training.
+- Preserved OBB workflow, Basler/Pylon support, exposure controls, reviewed-only export, force review, recipe-index performance cache, and canvas performance behavior.

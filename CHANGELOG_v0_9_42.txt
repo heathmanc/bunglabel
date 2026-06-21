@@ -1,0 +1,7 @@
+BungVision Label Studio v0.9.42 - Camera Resolution / Basler AOI Apply Fix
+
+- Fixed Camera Settings Apply/Save while preview is open: stream-format changes now close/reopen the camera so the displayed frame actually changes resolution.
+- Fixed Basler/Pylon AOI handling by resetting OffsetX/OffsetY before applying Width/Height.
+- For Basler/Pylon, blank or zero Width/Height now requests the full available sensor AOI instead of leaving the camera stuck at an old smaller AOI.
+- Added actual AOI size to the camera-open status message.
+- Preserved v0.9.41 compact right-panel controls and all OBB/review/export behavior.

@@ -1,0 +1,9 @@
+BungVision Label Studio v0.9.34 - Force Review Quantity Mismatches
+
+- Added Force Review Current for intentional quantity mismatches, such as missing-bung/fail examples.
+- Added Ctrl+Shift+F shortcut for force review.
+- Normal Mark Current Reviewed now requires the recipe counts to match.
+- Save Labels marks reviewed only when counts match; mismatch images are saved but stay unreviewed unless force-reviewed.
+- Force-reviewed images are clearly marked in the file list and dataset summary.
+- Export still includes only Label-Studio-reviewed images; force-reviewed images qualify because the operator explicitly accepted them.
+- Preserved OBB battery/bung workflow, Basler exposure fixes, launcher fixes, and reviewed-only export behavior.
