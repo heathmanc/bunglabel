@@ -1384,7 +1384,7 @@ class MainWindow(QMainWindow):
         ev.setContentsMargins(8, 8, 8, 8)
         ev.setSpacing(4)
         self.export_task_combo = QComboBox()
-        self.export_task_combo.addItem("OBB dataset - batteries + bungs", "obb")
+        self.export_task_combo.addItem("OBB dataset - all labeled classes", "obb")
         self.export_task_combo.addItem("Detect boxes dataset - compatibility", "detect")
         exp = QPushButton("Export Dataset")
         exp.clicked.connect(self.export_yolo)
