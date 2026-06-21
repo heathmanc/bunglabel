@@ -1,7 +1,7 @@
 # BungVision Label Studio
 
-**Current target version:** v0.9.42  
-**Package reviewed:** `bung_labeling_tool_v0_9_42_camera_resolution_apply_fix.zip`  
+**Current target version:** v0.9.43  
+**Package reviewed:** `bung_labeling_tool_v0_9_43_performance_and_cleanup.zip`  
 **Purpose:** custom PySide6 labeling/capture/training utility for BungVision battery bung inspection.
 
 This is **not** the commercial HumanSignal Label Studio project. It is a custom Python/PySide6 desktop tool used to capture, review, label, and export training images for the BungVision machine-vision system.
@@ -876,6 +876,7 @@ Key recent versions:
 - v0.9.40: compact count inputs, no spinbox arrows
 - v0.9.41: compact right-panel button height for 1920x1080
 - v0.9.42: camera resolution apply / Basler AOI fix
+- v0.9.43: performance tuning (frame-seq dedup, vectorized gamma LUT, hoisted filter parsing, single-pass image list), dead training/detect/TensorRT code removed
 
 ---
 

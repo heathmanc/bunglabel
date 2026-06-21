@@ -75,7 +75,7 @@ from bung_labeler.ui.canvas import ImageCanvas
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Bung labeling tool v0.9.42")
+        self.setWindowTitle("BungVision Label Studio v0.9.43")
         self.resize(1450, 850)
         self.setMinimumSize(1000, 650)
         self.setWindowFlags(self.windowFlags() | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
@@ -1517,7 +1517,7 @@ class MainWindow(QMainWindow):
         record = {
             "reviewed": True,
             "reviewed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "reviewed_by": "BungVision Label Studio v0.9.42",
+            "reviewed_by": "BungVision Label Studio v0.9.43",
             "source": "bungvision_label_studio",
             "tool": "BungVision Label Studio",
             "reason": reason,
