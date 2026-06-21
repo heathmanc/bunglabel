@@ -272,6 +272,36 @@ def save_capture(recipe: Recipe, frame_bgr: np.ndarray, adjusted_bgr: np.ndarray
     return raw_path, adjusted_path
 
 
+IMPORT_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
+
+
+def import_images(recipe: Recipe, paths: list[Path | str]) -> tuple[list[Path], list[str]]:
+    """Copy external images into a recipe's capture folder.
+
+    Each source is decoded and re-encoded to JPEG under the recipe's normal
+    naming convention so it shows up in the captured-image list and can be
+    labeled like any captured frame.  Returns (imported_paths, errors).
+    """
+    folder = capture_folder(recipe)
+    imported: list[Path] = []
+    errors: list[str] = []
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    for i, src in enumerate(paths):
+        src = Path(src)
+        try:
+            img = cv2.imread(str(src))
+            if img is None:
+                errors.append(f"Could not read image: {src.name}")
+                continue
+            base = f"{recipe.safe_name}_import_{ts}_{i:04d}"
+            dest = folder / f"{base}.jpg"
+            cv2.imwrite(str(dest), img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+            imported.append(dest)
+        except Exception as exc:  # pragma: no cover - defensive
+            errors.append(f"{src.name}: {exc}")
+    return imported, errors
+
+
 def image_label_json_path(image_path: Path) -> Path:
     # data/labels/<recipe>/<image_stem>.json
     recipe_name = image_path.parent.name

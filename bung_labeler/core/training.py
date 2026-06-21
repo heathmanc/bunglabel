@@ -109,3 +109,77 @@ def build_train_command(yolo_exe: str, params: dict) -> list[str]:
         add("resume", "True")
 
     return cmd
+
+
+# --- Live training-metrics parsing -------------------------------------------
+# Ultralytics writes <project>/<name>/results.csv, one row per finished epoch.
+# Parsing that file (rather than the tqdm stdout, which uses carriage returns)
+# gives a clean, pollable source for the live loss/mAP chart.
+
+def parse_results_csv(text: str) -> list[dict]:
+    """Parse an Ultralytics results.csv into a list of per-epoch row dicts.
+
+    Numeric cells are converted to floats; non-numeric cells stay as strings.
+    Malformed rows (wrong column count) are skipped so a half-written file
+    being polled mid-train does not raise.
+    """
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return []
+    header = [h.strip() for h in lines[0].split(",")]
+    rows: list[dict] = []
+    for line in lines[1:]:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != len(header):
+            continue
+        row: dict = {}
+        for key, raw in zip(header, parts):
+            try:
+                row[key] = float(raw)
+            except ValueError:
+                row[key] = raw
+        rows.append(row)
+    return rows
+
+
+def _first_matching_column(columns: list[str], needle: str) -> str | None:
+    needle = needle.lower()
+    for col in columns:
+        if needle in col.lower():
+            return col
+    return None
+
+
+def metric_series(rows: list[dict], needle: str) -> list[float]:
+    """Numeric series for the first column whose name contains ``needle``."""
+    if not rows:
+        return []
+    col = _first_matching_column(list(rows[0].keys()), needle)
+    if col is None:
+        return []
+    out: list[float] = []
+    for r in rows:
+        v = r.get(col)
+        if isinstance(v, (int, float)):
+            out.append(float(v))
+    return out
+
+
+# Series shown on the live chart: a short label and the substring used to find
+# the matching results.csv column across detect/obb/segment/pose runs.
+CHART_SERIES = (
+    ("box_loss", "train/box_loss"),
+    ("cls_loss", "train/cls_loss"),
+    ("mAP50", "metrics/mAP50("),
+    ("mAP50-95", "metrics/mAP50-95("),
+)
+
+
+def chart_series(rows: list[dict]) -> dict[str, list[float]]:
+    """Return {label: series} for the standard chart metrics that are present."""
+    out: dict[str, list[float]] = {}
+    for label, needle in CHART_SERIES:
+        series = metric_series(rows, needle)
+        if series:
+            out[label] = series
+    return out
