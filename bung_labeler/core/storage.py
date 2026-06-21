@@ -275,16 +275,38 @@ def save_capture(recipe: Recipe, frame_bgr: np.ndarray, adjusted_bgr: np.ndarray
 IMPORT_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
 
 
-def import_images(recipe: Recipe, paths: list[Path | str]) -> tuple[list[Path], list[str]]:
-    """Copy external images into a recipe's capture folder.
+def find_sidecar_json(image_src: Path) -> Path | None:
+    """Locate a BungVision-style sidecar label JSON next to a source image.
 
-    Each source is decoded and re-encoded to JPEG under the recipe's normal
-    naming convention so it shows up in the captured-image list and can be
-    labeled like any captured frame.  Returns (imported_paths, errors).
+    Supports both ``foo.json`` (stem) and ``foo.jpg.json`` (full-name) layouts
+    that BungVision/Label-Studio exports use.
+    """
+    candidates = [
+        image_src.with_suffix(".json"),
+        Path(str(image_src) + ".json"),
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def import_images(recipe: Recipe, paths: list[Path | str]) -> tuple[list[Path], list[str], int]:
+    """Copy external images (and any sidecar label JSON) into a recipe.
+
+    Each source image is decoded and re-encoded to JPEG under the recipe's
+    normal naming convention so it shows up in the captured-image list. If a
+    BungVision-style sidecar ``.json`` sits next to the image, its boxes and
+    review/source metadata are written into the recipe's label folder under the
+    new image name, so imported labels appear immediately (unreviewed ones show
+    as "needs review", matching the existing BungVision import behavior).
+
+    Returns (imported_paths, errors, label_count).
     """
     folder = capture_folder(recipe)
     imported: list[Path] = []
     errors: list[str] = []
+    label_count = 0
     ts = time.strftime("%Y%m%d_%H%M%S")
     for i, src in enumerate(paths):
         src = Path(src)
@@ -297,9 +319,40 @@ def import_images(recipe: Recipe, paths: list[Path | str]) -> tuple[list[Path], 
             dest = folder / f"{base}.jpg"
             cv2.imwrite(str(dest), img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
             imported.append(dest)
+
+            sidecar = find_sidecar_json(src)
+            if sidecar is not None:
+                try:
+                    data = json.loads(sidecar.read_text(encoding="utf-8"))
+                    _write_imported_label(dest, img, data)
+                    label_count += 1
+                except Exception as exc:
+                    errors.append(f"{src.name} label JSON: {exc}")
         except Exception as exc:  # pragma: no cover - defensive
             errors.append(f"{src.name}: {exc}")
-    return imported, errors
+    return imported, errors, label_count
+
+
+def _write_imported_label(image_path: Path, img_bgr: "np.ndarray", data: dict[str, Any]) -> Path:
+    """Write a sidecar label JSON for an imported image, preserving its content.
+
+    The full source payload is kept (boxes plus any review/source metadata) but
+    the image path and dimensions are corrected to the newly imported file.
+    """
+    h, w = img_bgr.shape[:2]
+    payload = dict(data) if isinstance(data, dict) else {}
+    payload["image"] = str(image_path)
+    try:
+        payload["width"] = int(payload.get("width") or w)
+        payload["height"] = int(payload.get("height") or h)
+    except (TypeError, ValueError):
+        payload["width"], payload["height"] = w, h
+    payload["boxes"] = payload.get("boxes") or []
+    # Record provenance so review tooling treats these as imported.
+    payload.setdefault("imported_from", "image_import")
+    path = image_label_json_path(image_path)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
 
 
 def image_label_json_path(image_path: Path) -> Path:
