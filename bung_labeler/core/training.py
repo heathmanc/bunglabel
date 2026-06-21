@@ -183,3 +183,66 @@ def chart_series(rows: list[dict]) -> dict[str, list[float]]:
         if series:
             out[label] = series
     return out
+
+
+# Validation metrics shown in the training-finished summary.
+SUMMARY_METRICS = (
+    ("precision", "metrics/precision"),
+    ("recall", "metrics/recall"),
+    ("mAP50", "metrics/mAP50("),
+    ("mAP50-95", "metrics/mAP50-95("),
+)
+
+
+def summarize_results(rows: list[dict]) -> dict:
+    """Summarize a parsed results.csv into final + best validation metrics.
+
+    Returns a dict with:
+      epochs       - epoch number of the last row (or row count if no column)
+      rows         - number of recorded epochs
+      final        - {metric: value} from the last epoch
+      best         - {metric: value} from the best epoch (ranked by mAP50-95,
+                     falling back to mAP50)
+      best_epoch   - epoch number of that best row
+    Empty rows yield {"epochs": 0, "rows": 0, "final": {}, "best": {}, "best_epoch": 0}.
+    """
+    if not rows:
+        return {"epochs": 0, "rows": 0, "final": {}, "best": {}, "best_epoch": 0}
+
+    epoch_series = metric_series(rows, "epoch")
+    epochs = int(epoch_series[-1]) if epoch_series else len(rows)
+
+    final: dict[str, float] = {}
+    for label, needle in SUMMARY_METRICS:
+        series = metric_series(rows, needle)
+        if series:
+            final[label] = series[-1]
+
+    # Rank epochs by mAP50-95, then mAP50, to find the best checkpoint.
+    rank = metric_series(rows, "mAP50-95(") or metric_series(rows, "mAP50(")
+    best_idx = max(range(len(rank)), key=lambda i: rank[i]) if rank else len(rows) - 1
+
+    best: dict[str, float] = {}
+    for label, needle in SUMMARY_METRICS:
+        series = metric_series(rows, needle)
+        if series and best_idx < len(series):
+            best[label] = series[best_idx]
+
+    if epoch_series and best_idx < len(epoch_series):
+        best_epoch = int(epoch_series[best_idx])
+    else:
+        best_epoch = best_idx + 1
+
+    return {"epochs": epochs, "rows": len(rows), "final": final, "best": best, "best_epoch": best_epoch}
+
+
+def format_duration(seconds: float) -> str:
+    """Human duration like '1h 23m 4s' / '5m 12s' / '47s'."""
+    seconds = int(max(0, round(seconds)))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
