@@ -538,14 +538,13 @@ class MainWindow(QMainWindow):
         # Row 3: Workers | yolo executable
         grid.addWidget(_lbl("Workers"), 3, 0); grid.addWidget(self.train_workers_spin, 3, 1)
         grid.addWidget(_lbl("yolo exe"), 3, 2); grid.addWidget(self.train_yolo_exe_edit, 3, 3)
-        # Row 4: Output folder (spans both right columns)
+        # Row 4: Output folder (edit spans cols 1-2, browse button in col 3)
         self.train_project_edit = QLineEdit(str(params["project"]))
         project_browse = QPushButton("Folder...")
         project_browse.clicked.connect(self.browse_train_project)
-        proj_row = QHBoxLayout(); proj_row.setContentsMargins(0, 0, 0, 0)
-        proj_row.addWidget(self.train_project_edit); proj_row.addWidget(project_browse)
-        proj_widget = QWidget(); proj_widget.setLayout(proj_row)
-        grid.addWidget(_lbl("Output folder"), 4, 0); grid.addWidget(proj_widget, 4, 1, 1, 3)
+        grid.addWidget(_lbl("Output folder"), 4, 0)
+        grid.addWidget(self.train_project_edit, 4, 1, 1, 2)
+        grid.addWidget(project_browse, 4, 3)
         # Row 5: Run name | Resume
         self.train_name_edit = QLineEdit(str(params["name"]))
         self.train_resume_check = QCheckBox("Resume from checkpoint")
