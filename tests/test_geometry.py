@@ -51,6 +51,13 @@ def test_polygon_long_edge_angle_too_few_points():
     assert g.polygon_long_edge_angle(None) == (None, 0.0)
 
 
+def test_rect_iou():
+    assert g.rect_iou((0, 0, 10, 10), (0, 0, 10, 10)) == 1.0
+    assert g.rect_iou((0, 0, 10, 10), (100, 100, 10, 10)) == 0.0
+    # Half-overlap on x: intersection 50, union 150 -> 1/3.
+    assert abs(g.rect_iou((0, 0, 10, 10), (5, 0, 10, 10)) - (50 / 150)) < 1e-6
+
+
 if __name__ == "__main__":
     import traceback
 

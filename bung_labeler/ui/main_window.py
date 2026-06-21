@@ -154,6 +154,18 @@ class MainWindow(QMainWindow):
         class_menu = menubar.addMenu("Class")
         nav_menu = menubar.addMenu("Navigate")
         capture_menu = menubar.addMenu("Capture")
+        tools_menu = menubar.addMenu("Tools")
+
+        undo_action = QAction("Undo", self)
+        undo_action.setShortcut(QKeySequence.Undo)
+        undo_action.triggered.connect(self.undo_canvas)
+        edit_menu.addAction(undo_action)
+
+        redo_action = QAction("Redo", self)
+        redo_action.setShortcut(QKeySequence.Redo)
+        redo_action.triggered.connect(self.redo_canvas)
+        edit_menu.addAction(redo_action)
+        edit_menu.addSeparator()
 
         open_action = QAction("Open image", self)
         open_action.setShortcut(QKeySequence.Open)
@@ -239,6 +251,16 @@ class MainWindow(QMainWindow):
         capture_action.setShortcut("C")
         capture_action.triggered.connect(lambda: self.capture_frame(save_adjusted=True))
         capture_menu.addAction(capture_action)
+
+        auto_label_action = QAction("Auto-label current (model)", self)
+        auto_label_action.setShortcut("Ctrl+L")
+        auto_label_action.triggered.connect(self.auto_label_current)
+        tools_menu.addAction(auto_label_action)
+
+        validate_action = QAction("Validate current image", self)
+        validate_action.setShortcut("Ctrl+Shift+V")
+        validate_action.triggered.connect(self.validate_current_image)
+        tools_menu.addAction(validate_action)
 
     def _scroll_panel(self, widget: QWidget, min_width: int, preferred_width: int) -> QScrollArea:
         scroll = QScrollArea()
@@ -370,11 +392,14 @@ class MainWindow(QMainWindow):
         show_labels_btn = QPushButton("Show Labels")
         show_labels_btn.setToolTip("Shows saved/manual labels again. This does not affect model-test overlays.")
         show_labels_btn.clicked.connect(self.show_saved_annotations)
+        auto_label_btn = QPushButton("Auto-label Current")
+        auto_label_btn.setToolTip("Pre-label the current image with this model. Predictions become editable labels you correct and save. Undo with Ctrl+Z.")
+        auto_label_btn.clicked.connect(self.auto_label_current)
 
         run_grid = QGridLayout()
         run_grid.setHorizontalSpacing(8)
         run_grid.setVerticalSpacing(8)
-        test_buttons = (run_btn, count_btn, clear_btn, show_labels_btn)
+        test_buttons = (run_btn, count_btn, clear_btn, show_labels_btn, auto_label_btn)
         for i, btn in enumerate(test_buttons):
             btn.setMinimumHeight(32)
             btn.setMinimumWidth(0)
@@ -2065,6 +2090,130 @@ class MainWindow(QMainWindow):
         t1 = time.perf_counter()
         return frame, results, t0, t1
 
+    def _overlay_items_to_box_dicts(self, items: list[dict]) -> list[dict]:
+        """Convert model-test overlay items into editable canvas box dicts.
+
+        Battery/bung detections become OBB labels (or plain boxes when the model
+        is a detect model), so the operator corrects predictions instead of
+        drawing every box from scratch.
+        """
+        boxes: list[dict] = []
+        for it in items:
+            typ = str(it.get("type", "")).lower()
+            if typ.startswith("battery"):
+                label, class_id = "battery", 0
+            elif typ.startswith("bung"):
+                label, class_id = "bung", 1
+            else:
+                continue
+            pts = it.get("points") or []
+            if len(pts) >= 4:
+                boxes.append({
+                    "kind": "obb",
+                    "points": [[float(x), float(y)] for x, y in pts[:4]],
+                    "label": label,
+                    "class_id": class_id,
+                })
+            elif "xyxy" in it:
+                x1, y1, x2, y2 = [float(v) for v in it.get("xyxy", [0, 0, 0, 0])]
+                boxes.append({
+                    "kind": "box",
+                    "x": x1, "y": y1,
+                    "w": max(1.0, x2 - x1), "h": max(1.0, y2 - y1),
+                    "label": label,
+                    "class_id": class_id,
+                })
+        return boxes
+
+    def auto_label_current(self) -> None:
+        """Pre-label the current image with the trained model, leaving the result
+        as editable labels for the operator to correct and save."""
+        image_path = self.current_image_path or self._current_test_image_path()
+        if image_path is None:
+            QMessageBox.information(self, "Auto-label", "Open or capture an image first.")
+            return
+        image_path = Path(image_path)
+        if not image_path.exists():
+            QMessageBox.warning(self, "Auto-label", f"Image not found:\n{image_path}")
+            return
+        model_path = self.test_model_edit.text().strip() if hasattr(self, "test_model_edit") else ""
+        if not model_path:
+            QMessageBox.information(
+                self, "Auto-label",
+                "Set a trained OBB model in the Model Test tab first, then try Auto-label again.",
+            )
+            return
+
+        existing = len(self.canvas.boxes)
+        if existing:
+            reply = QMessageBox.question(
+                self, "Auto-label",
+                f"Replace the {existing} existing label(s) on this image with model predictions?\n\n"
+                "You can Undo (Ctrl+Z) afterwards.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        try:
+            self.status.showMessage("Auto-labeling with model...", 2000)
+            QApplication.processEvents()
+            frame, results, _t0, _t1 = self._run_test_model_on_image(image_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Auto-label", str(e))
+            return
+
+        battery_items, battery_count, _ = self._battery_obb_overlay_items(results)
+        if battery_count == 0:
+            battery_items, battery_count, _ = self._battery_box_overlay_items(results)
+        bung_items, bung_count = self._bung_overlay_items(results)
+        box_dicts = self._overlay_items_to_box_dicts(battery_items + bung_items)
+        if not box_dicts:
+            QMessageBox.information(
+                self, "Auto-label",
+                "The model produced no battery/bung detections at the current confidence.\n"
+                "Lower Confidence in the Model Test tab and try again.",
+            )
+            return
+
+        # Make sure we are editing this image, then replace boxes as one undo step.
+        if self.current_image_path != image_path:
+            self._load_image_path(image_path)
+        self.canvas.clear_model_test_overlays()
+        self.canvas.set_annotation_visibility(True)
+        self._model_test_overlay_active = False
+        self.canvas.push_undo_snapshot()
+        self.canvas.set_boxes_from_dicts(box_dicts)
+        self.status.showMessage(
+            f"Auto-labeled {battery_count} batteries, {bung_count} bungs. Correct as needed, then Save Labels.",
+            8000,
+        )
+
+    def validate_current_image(self) -> None:
+        """Run label-quality linting on the on-canvas boxes and report issues."""
+        boxes = [b.to_dict() for b in self.canvas.boxes]
+        if not boxes:
+            QMessageBox.information(self, "Validate", "This image has no labels to validate.")
+            return
+        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
+        issues = review_logic.validate_boxes(boxes, self.canvas.image_w, self.canvas.image_h, int(expected))
+        if not issues:
+            QMessageBox.information(self, "Validate", "No label-quality issues found.")
+        else:
+            QMessageBox.warning(
+                self, "Validate",
+                f"Found {len(issues)} issue(s):\n\n" + "\n".join(f"• {s}" for s in issues),
+            )
+        self.status.showMessage(f"Validation: {len(issues)} issue(s)", 6000)
+
+    def undo_canvas(self) -> None:
+        if not self.canvas.undo():
+            self.status.showMessage("Nothing to undo", 3000)
+
+    def redo_canvas(self) -> None:
+        if not self.canvas.redo():
+            self.status.showMessage("Nothing to redo", 3000)
+
     def _current_test_image_path(self) -> Path | None:
         image_text = self.test_image_edit.text().strip() if hasattr(self, "test_image_edit") else ""
         if not image_text and self.current_image_path:
@@ -2677,6 +2826,7 @@ class MainWindow(QMainWindow):
                 data = json.loads(p.read_text(encoding="utf-8"))
                 boxes = [self._normalize_import_box(b) for b in data.get("boxes", [])]
                 if boxes:
+                    self.canvas.push_undo_snapshot()
                     self.canvas.set_boxes_from_dicts(boxes)
                     self.status.showMessage(f"Copied labels from: {p.name}", 5000)
                     self._update_box_count()
@@ -2891,6 +3041,7 @@ class MainWindow(QMainWindow):
         if not self.canvas.boxes:
             self.status.showMessage("No on-screen boxes to clear", 3000)
             return
+        self.canvas.push_undo_snapshot()
         self.canvas.clear_boxes()
         self._update_box_count()
         self.status.showMessage("On-screen boxes cleared. Saved JSON was not changed; click Save to overwrite it.", 6000)

@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 
 from ..version import APP_TITLE
-from .geometry import point_in_polygon
+from .geometry import point_in_polygon, rect_iou
 
 _REVIEW_MARKER_KEYS = ("source", "tool", "review_source", "reviewed_by", "reviewer", "app")
 
@@ -222,3 +222,59 @@ def quantity_summary_text(boxes: list[dict], expected: int) -> str:
     if outside:
         lines.append(f"Bungs outside any battery: {outside}")
     return "\n".join(lines)
+
+
+# --- annotation linting ---------------------------------------------------
+
+def _box_bounds(box: dict) -> tuple[float, float, float, float]:
+    poly = box_polygon(box)
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
+
+
+def validate_boxes(
+    boxes: list[dict],
+    image_w: int,
+    image_h: int,
+    expected: int,
+    *,
+    min_side: float = 3.0,
+    overlap_iou: float = 0.6,
+) -> list[str]:
+    """Return a list of human-readable label-quality issues. Empty == clean.
+
+    Catches the geometry-level mistakes that quietly poison OBB training and
+    that the count-based review gate does not see: degenerate/tiny boxes,
+    out-of-bounds boxes, heavily overlapping (duplicate) bungs, and the
+    per-battery quantity/containment problems.
+    """
+    issues: list[str] = []
+    norm = [normalize_box(b) for b in boxes]
+
+    for idx, b in enumerate(norm, start=1):
+        name = str(b.get("label", "") or "box")
+        bx, by, bw, bh = _box_bounds(b)
+        if bw < min_side or bh < min_side:
+            issues.append(f"{name} #{idx}: degenerate/too small ({bw:.0f}x{bh:.0f}px)")
+        if image_w and image_h:
+            if bx < -1 or by < -1 or bx + bw > image_w + 1 or by + bh > image_h + 1:
+                issues.append(f"{name} #{idx}: extends outside the image bounds")
+
+    bungs = [b for b in norm if _box_is_bung(b)]
+    bung_bounds = [_box_bounds(b) for b in bungs]
+    for i in range(len(bungs)):
+        for j in range(i + 1, len(bungs)):
+            if rect_iou(bung_bounds[i], bung_bounds[j]) > overlap_iou:
+                issues.append(f"Bungs #{i + 1} and #{j + 1} overlap heavily (possible duplicate)")
+
+    counts, outside = per_battery_bung_counts(boxes)
+    if not counts:
+        issues.append("No battery is labeled.")
+    for i, c in enumerate(counts, start=1):
+        if c != int(expected):
+            issues.append(f"Battery {i}: {c} bungs inside (expected {int(expected)})")
+    if outside:
+        issues.append(f"{outside} bung(s) are outside every battery")
+
+    return issues

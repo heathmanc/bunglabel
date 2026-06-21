@@ -26,6 +26,21 @@ def point_in_polygon(x: float, y: float, poly) -> bool:
     return inside
 
 
+def rect_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    """Intersection-over-union of two axis-aligned rectangles given as (x, y, w, h)."""
+    ax, ay, aw, ah = (float(v) for v in a)
+    bx, by, bw, bh = (float(v) for v in b)
+    ax2, ay2 = ax + aw, ay + ah
+    bx2, by2 = bx + bw, by + bh
+    ix = max(0.0, min(ax2, bx2) - max(ax, bx))
+    iy = max(0.0, min(ay2, by2) - max(ay, by))
+    inter = ix * iy
+    if inter <= 0.0:
+        return 0.0
+    union = aw * ah + bw * bh - inter
+    return inter / union if union > 0 else 0.0
+
+
 def normalize_angle_deg(angle: float) -> float:
     """Normalize an image-space angle to [-90, 90) degrees for readable skew."""
     angle = float(angle)
