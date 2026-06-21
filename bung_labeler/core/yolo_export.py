@@ -280,6 +280,10 @@ def _write_dataset(out: Path, entries, class_mode: str, split_train: float, comb
                 class_name = _class_name_for_box(box, recipe_safe_name, class_mode)
                 if not class_name:
                     continue
+                if class_name not in class_index:
+                    # Should not happen, but avoid crashing an export because of a
+                    # malformed late-added label. Mirrors the OBB exporter guard.
+                    continue
 
                 lines.append(
                     _yolo_line(box, int(data["width"]), int(data["height"]), class_index[class_name])

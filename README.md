@@ -466,9 +466,15 @@ Reviewed-only export is central to this tool. The purpose is to keep imported or
 
 A normal reviewed image should have:
 
-- one battery label
-- expected number of bung labels from the recipe
+- at least one battery label
+- exactly the recipe's expected number of bungs **inside every battery** (a bung is assigned to a battery when its center falls within that battery's polygon)
+- no bung labels outside all batteries
 - Label Studio review marker
+
+As of v0.9.43 multiple batteries are supported in a single image: if two batteries
+are both fully labeled with the expected bungs, the image passes normal review with
+no force-review needed. Force review is only required when at least one battery is
+missing/over its expected bung count, or a bung sits outside every battery.
 
 Normal review can be set by:
 
@@ -506,17 +512,17 @@ Typical force-review metadata:
 {
   "review": {
     "reviewed": true,
+    "reviewed_by": "BungVision Label Studio v0.9.43",
     "source": "bungvision_label_studio",
     "tool": "BungVision Label Studio",
-    "review_status": "force_reviewed",
     "forced_review": true,
-    "force_reviewed": true
-  },
-  "reviewed": true,
-  "forced_review": true,
-  "force_reviewed": true
+    "review_status": "forced_reviewed",
+    "forced_reason": "quantity_mismatch"
+  }
 }
 ```
+
+`_annotation_force_reviewed` also accepts the legacy `force_reviewed: true` key for backward compatibility, but current builds write `forced_review` / `review_status: "forced_reviewed"`.
 
 ### Important safety rule
 
@@ -551,6 +557,7 @@ Typical output folder:
 data/exports/all_recipes_obb/
 ├── data.yaml
 ├── manifest.csv
+├── class_mode.txt
 ├── review_filter.txt
 ├── task.txt
 ├── images/

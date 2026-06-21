@@ -1596,10 +1596,6 @@ class MainWindow(QMainWindow):
         bung = sum(1 for b in boxes if str(b.get("label", "")).startswith("bung") or int(b.get("class_id", -1)) == 1)
         return batt, bung
 
-    def _counts_match_required(self, batt: int, bung: int) -> bool:
-        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-        return int(batt) == 1 and int(bung) == int(expected)
-
     def _current_label_counts(self) -> tuple[int, int]:
         batt = sum(1 for b in self.canvas.boxes if self._box_kind(b) == "battery")
         bung = sum(1 for b in self.canvas.boxes if self._box_kind(b) == "bung")
@@ -1688,7 +1684,7 @@ class MainWindow(QMainWindow):
             elif forced:
                 status = "forced"
                 prefix = f"⚠ FORCE REVIEW {batt}B/{bung}U  "
-            elif batt == 1 and bung == int(expected):
+            elif self._quantities_satisfied(data.get("boxes", [])):
                 status = "ready"
                 prefix = "✓ REVIEWED OK  "
             else:
@@ -2765,6 +2761,74 @@ class MainWindow(QMainWindow):
                 bung += 1
         return batt, bung
 
+    def _box_polygon_from_dict(self, box: dict) -> list[list[float]]:
+        """Return four image-space corner points for either an OBB or a plain box."""
+        pts = box.get("points") or box.get("obb") or []
+        if len(pts) >= 4:
+            return [[float(p[0]), float(p[1])] for p in pts[:4]]
+        x = float(box.get("x", 0.0))
+        y = float(box.get("y", 0.0))
+        w = float(box.get("w", 0.0))
+        h = float(box.get("h", 0.0))
+        return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+
+    def _box_center_from_dict(self, box: dict) -> tuple[float, float]:
+        poly = self._box_polygon_from_dict(box)
+        cx = sum(p[0] for p in poly) / len(poly)
+        cy = sum(p[1] for p in poly) / len(poly)
+        return cx, cy
+
+    def _per_battery_bung_counts(self, boxes: list[dict]) -> tuple[list[int], int]:
+        """Assign each bung to the battery whose polygon contains its center.
+
+        Returns (per-battery bung counts, number of bungs outside every battery).
+        Supports any number of batteries in view, not just one.
+        """
+        batteries: list[list[list[float]]] = []
+        bung_centers: list[tuple[float, float]] = []
+        for raw in boxes:
+            b = self._normalize_import_box(raw)
+            label = str(b.get("label", ""))
+            class_id = int(b.get("class_id", -1))
+            if label.startswith("battery") or class_id == 0:
+                batteries.append(self._box_polygon_from_dict(b))
+            elif label.startswith("bung") or class_id == 1:
+                bung_centers.append(self._box_center_from_dict(b))
+
+        counts = [0] * len(batteries)
+        outside = 0
+        for cx, cy in bung_centers:
+            assigned = False
+            for i, poly in enumerate(batteries):
+                if self._point_inside_polygon(cx, cy, poly):
+                    counts[i] += 1
+                    assigned = True
+                    break
+            if not assigned:
+                outside += 1
+        return counts, outside
+
+    def _quantities_satisfied(self, boxes: list[dict]) -> bool:
+        """Review passes without force when every battery in view holds exactly the
+        expected number of bungs, there is at least one battery, and no bung falls
+        outside all batteries. This lets multiple fully-labeled batteries pass."""
+        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
+        counts, outside = self._per_battery_bung_counts(boxes)
+        if not counts or outside:
+            return False
+        return all(c == int(expected) for c in counts)
+
+    def _quantity_summary_text(self, boxes: list[dict]) -> str:
+        """Human-readable per-battery breakdown for review dialogs."""
+        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
+        counts, outside = self._per_battery_bung_counts(boxes)
+        if not counts:
+            return f"Batteries: 0 (need at least 1)\nExpected bungs per battery: {expected}"
+        lines = [f"Battery {i + 1}: {c} / {expected} bungs" for i, c in enumerate(counts)]
+        if outside:
+            lines.append(f"Bungs outside any battery: {outside}")
+        return "\n".join(lines)
+
     def mark_current_reviewed(self) -> None:
         if not self.current_image_path:
             QMessageBox.information(self, "Review", "Open or capture an image before marking it reviewed.")
@@ -2773,15 +2837,13 @@ class MainWindow(QMainWindow):
         if not boxes:
             QMessageBox.information(self, "Review", "This image has no labels to review yet.")
             return
-        batt, bung = self._counts_from_box_dicts(boxes)
-        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-        if not self._counts_match_required(batt, bung):
+        if not self._quantities_satisfied(boxes):
             QMessageBox.information(
                 self,
                 "Review",
-                f"This image does not match the recipe quantities.\n\n"
-                f"Battery: {batt} / 1\n"
-                f"Bungs: {bung} / expected {expected}\n\n"
+                "This image does not match the recipe quantities.\n\n"
+                f"{self._quantity_summary_text(boxes)}\n\n"
+                "Each battery in view must hold exactly the expected number of bungs.\n"
                 "Use Force Review Current only if this is intentional, such as a missing-bung/fail training example.",
             )
             return
@@ -2807,8 +2869,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Force Review", "This image has no labels to review yet.")
             return
         batt, bung = self._counts_from_box_dicts(boxes)
-        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-        if self._counts_match_required(batt, bung):
+        if self._quantities_satisfied(boxes):
             path = save_annotations(
                 self.current_image_path,
                 self.canvas.image_w,
@@ -2824,9 +2885,8 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self,
             "Force Review Quantity Mismatch",
-            f"Force this image to reviewed even though the required quantities do not match?\n\n"
-            f"Battery: {batt} / 1\n"
-            f"Bungs: {bung} / expected {expected}\n\n"
+            "Force this image to reviewed even though the required quantities do not match?\n\n"
+            f"{self._quantity_summary_text(boxes)}\n\n"
             "This image will be included in reviewed-only export and training. Use this for intentional fail/missing-bung examples.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -2870,7 +2930,7 @@ class MainWindow(QMainWindow):
         boxes = [b.to_dict() for b in self.canvas.boxes]
         batt, bung = self._counts_from_box_dicts(boxes)
         expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-        review = self._review_record("save_labels") if self._counts_match_required(batt, bung) else None
+        review = self._review_record("save_labels") if self._quantities_satisfied(boxes) else None
         path = save_annotations(
             self.current_image_path,
             self.canvas.image_w,
@@ -2883,7 +2943,7 @@ class MainWindow(QMainWindow):
         self._invalidate_image_status(self.current_image_path)
         if review is None:
             self.status.showMessage(
-                f"Saved labels only; not reviewed because counts are {batt} battery, {bung}/{expected} bungs. Use Force Review if intentional.",
+                f"Saved labels only; not reviewed ({batt} batteries, {bung} bungs, need {expected}/battery). Use Force Review if intentional.",
                 8000,
             )
         else:
@@ -2958,12 +3018,16 @@ class MainWindow(QMainWindow):
         return str(label)
 
     def _update_box_count(self) -> None:
-        battery_count = sum(1 for b in self.canvas.boxes if self._box_kind(b) == "battery")
-        bung_count = sum(1 for b in self.canvas.boxes if self._box_kind(b) == "bung")
+        boxes = [b.to_dict() for b in self.canvas.boxes]
+        battery_count, bung_count = self._counts_from_box_dicts(boxes)
         expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-        state = "OK" if battery_count == 1 and bung_count == expected else "CHECK"
+        # Multiple batteries are allowed: counts are OK when every battery holds
+        # exactly the expected number of bungs and none fall outside a battery.
+        state = "OK" if self._quantities_satisfied(boxes) else "CHECK"
         if hasattr(self, "count_label"):
-            self.count_label.setText(f"Battery: {battery_count} / 1   Bungs: {bung_count} / expected {expected}  [{state}]")
+            self.count_label.setText(
+                f"Batteries: {battery_count}   Bungs: {bung_count} (need {expected}/battery)  [{state}]"
+            )
         # Editing on-screen boxes does not change the on-disk dataset, so the
         # summary is refreshed by save/review/delete/capture and recipe changes
         # instead of walking every sidecar on each box draw/nudge.

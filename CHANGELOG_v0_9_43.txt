@@ -17,5 +17,16 @@ Dead code removed (~720 lines):
 - Unused bgr_to_qimage_rgb_bytes in image_adjust.py
 - Orphaned imports: importlib.util, QProcess, QTextCursor, QInputDialog
 
+Multi-battery review:
+- Review no longer requires force-review when several batteries are in view. Quantities pass when every battery polygon contains exactly the expected number of bungs (assigned by bung-center containment) and no bung falls outside all batteries.
+- Previous rule (exactly 1 battery + expected total bungs) is replaced by per-battery containment, supporting any number of batteries per image.
+- Review dialogs and the live count label now show a per-battery breakdown.
+- Applies to Mark Reviewed, Force Review, Save Labels, the image-list "REVIEWED OK" status, and the live count indicator.
+
+Accuracy / docs:
+- _write_dataset (detect/box exporter) now guards against a missing class_index entry, matching the OBB exporter; a malformed late-added label no longer crashes export.
+- Identity fast-path in apply_adjustments: returns the frame unchanged when all adjustment controls are at their no-op defaults, skipping copy/convertScaleAbs on the common live-view case.
+- README: corrected force-review JSON example to match actual output (review_status: "forced_reviewed"), added class_mode.txt to the export folder listing.
+
 Title bar updated from "Bung labeling tool v0.9.42" to "BungVision Label Studio v0.9.43".
 Review sidecar reviewed_by field updated to v0.9.43.
