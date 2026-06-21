@@ -557,8 +557,21 @@ class MainWindow(QMainWindow):
         Training runs via the `yolo` CLI in a QProcess so the UI stays responsive
         and the run is cancelable; stdout streams into the log below.
         """
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer_layout.addWidget(scroll)
+
         w = QWidget()
+        scroll.setWidget(w)
         layout = QVBoxLayout(w)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
         title = QLabel("Train a YOLO model")
         title.setStyleSheet("font-size: 10pt; font-weight: 700; color: #bfdbfe;")
@@ -735,7 +748,7 @@ class MainWindow(QMainWindow):
         self._eval_process = None
         self._eval_buffer = ""
         self._eval_last_model = ""
-        return w
+        return outer
 
     def _gather_eval_params(self) -> dict:
         return {
@@ -920,24 +933,54 @@ class MainWindow(QMainWindow):
         self.train_stop_btn.setEnabled(True)
         self.status.showMessage("Training started...", 5000)
 
-        # Track this run's results.csv and start polling it for the live chart.
-        project = params.get("project") or "data/training"
-        name = params.get("name") or "bungvision"
-        self._results_csv_path = Path(project) / name / "results.csv"
+        # Clear the chart immediately so the previous run's curves don't persist.
         if hasattr(self, "train_metrics_chart"):
             self.train_metrics_chart.clear()
+
+        # Track the expected results.csv path.  YOLO appends a numeric suffix
+        # (bungvision2, bungvision3 ...) when the run directory already exists.
+        # _results_csv_path starts as the bare name; _on_train_stdout detects the
+        # real save-dir line and updates it so the chart polls the right file.
+        self._train_project = params.get("project") or "data/training"
+        self._train_name = params.get("name") or "bungvision"
+        self._results_csv_path = Path(self._train_project) / self._train_name / "results.csv"
+
         if hasattr(self, "_metrics_timer"):
+            self._metrics_timer.stop()
             self._metrics_timer.start()
 
         proc.start(cmd[0], cmd[1:])
 
     def _poll_training_metrics(self) -> None:
-        """Re-read the active run's results.csv and refresh the live chart."""
-        path = getattr(self, "_results_csv_path", None)
-        if not path or not Path(path).exists() or not hasattr(self, "train_metrics_chart"):
+        """Re-read the active run's results.csv and refresh the live chart.
+
+        When the expected path doesn't exist yet we scan for YOLO-appended
+        numeric siblings (bungvision2, bungvision3 ...) with the most recent
+        mtime so repeated runs without renaming still get live curves.
+        """
+        if not hasattr(self, "train_metrics_chart"):
             return
+        path = getattr(self, "_results_csv_path", None)
+        if path is None:
+            return
+        path = Path(path)
+        if not path.exists():
+            # Try numbered siblings: project/name2, name3, ... → pick newest.
+            project = getattr(self, "_train_project", None)
+            name = getattr(self, "_train_name", None)
+            if project and name:
+                import glob as _glob
+                pattern = str(Path(project) / f"{name}*" / "results.csv")
+                candidates = [Path(p) for p in _glob.glob(pattern) if Path(p).exists()]
+                if candidates:
+                    path = max(candidates, key=lambda p: p.stat().st_mtime)
+                    self._results_csv_path = path
+                else:
+                    return
+            else:
+                return
         try:
-            text = Path(path).read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             return
         rows = training_logic.parse_results_csv(text)
@@ -948,10 +991,29 @@ class MainWindow(QMainWindow):
         if self._train_process is None:
             return
         data = bytes(self._train_process.readAllStandardOutput()).decode("utf-8", errors="replace")
-        if data:
-            self.train_log.moveCursor(QTextCursor.End)
-            self.train_log.insertPlainText(data)
-            self.train_log.moveCursor(QTextCursor.End)
+        if not data:
+            return
+        self.train_log.moveCursor(QTextCursor.End)
+        self.train_log.insertPlainText(data)
+        self.train_log.moveCursor(QTextCursor.End)
+        # Detect YOLO's "Results saved to <dir>" line so we follow the actual
+        # output directory even when YOLO appended a numeric suffix (bungvision2,
+        # bungvision3 ...) because the run name already existed on disk.
+        for line in data.splitlines():
+            line = line.strip()
+            # Ultralytics prints: "Results saved to runs/obb/train2" or similar.
+            # The CWD for the subprocess is the project root so the path may be
+            # relative, and ANSI escape codes may surround it.
+            if "results saved to" in line.lower():
+                import re
+                clean = re.sub(r"\x1b\[[0-9;]*m", "", line)
+                m = re.search(r"results saved to\s+(.+)", clean, re.IGNORECASE)
+                if m:
+                    save_dir = Path(m.group(1).strip())
+                    if not save_dir.is_absolute():
+                        save_dir = Path(DATA_DIR.parent) / save_dir
+                    candidate = save_dir / "results.csv"
+                    self._results_csv_path = candidate
 
     def _on_train_error(self, _error) -> None:
         if self._train_process is None:
