@@ -115,6 +115,38 @@ def test_chart_series_present_only():
     assert series["mAP50"] == [0.10, 0.30, 0.55]
 
 
+_RESULTS_CSV_VAL = (
+    "epoch,train/box_loss,metrics/precision(B),metrics/recall(B),metrics/mAP50(B),metrics/mAP50-95(B)\n"
+    "1,1.5,0.40,0.30,0.20,0.10\n"
+    "2,1.2,0.70,0.60,0.65,0.40\n"
+    "3,1.0,0.60,0.55,0.50,0.35\n"
+)
+
+
+def test_summarize_results_final_and_best():
+    rows = t.parse_results_csv(_RESULTS_CSV_VAL)
+    s = t.summarize_results(rows)
+    assert s["epochs"] == 3 and s["rows"] == 3
+    # Final row is epoch 3.
+    assert s["final"]["mAP50-95"] == 0.35
+    assert s["final"]["precision"] == 0.60
+    # Best by mAP50-95 is epoch 2.
+    assert s["best_epoch"] == 2
+    assert s["best"]["mAP50-95"] == 0.40
+    assert s["best"]["mAP50"] == 0.65
+
+
+def test_summarize_results_empty():
+    s = t.summarize_results([])
+    assert s == {"epochs": 0, "rows": 0, "final": {}, "best": {}, "best_epoch": 0}
+
+
+def test_format_duration():
+    assert t.format_duration(47) == "47s"
+    assert t.format_duration(312) == "5m 12s"
+    assert t.format_duration(3784) == "1h 3m 4s"
+
+
 if __name__ == "__main__":
     import tempfile
     import traceback

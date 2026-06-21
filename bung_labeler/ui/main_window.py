@@ -1050,6 +1050,7 @@ class MainWindow(QMainWindow):
         self._train_project = params.get("project") or "data/training"
         self._train_name = params.get("name") or "bungvision"
         self._train_start_time = time.time()
+        self._train_stopped = False
         self._results_csv_path = None  # resolved on first successful poll
 
         if hasattr(self, "_metrics_timer"):
@@ -1148,20 +1149,94 @@ class MainWindow(QMainWindow):
             self._metrics_timer.stop()
         self._poll_training_metrics()  # final refresh to catch the last epoch row
         self.train_log.append(f"\n[done] Training process exited with code {exit_code}.")
-        if exit_code == 0:
-            params = self._gather_train_params()
-            weights = Path(params["project"]) / params["name"] / "weights" / "best.pt"
+
+        elapsed = time.time() - getattr(self, "_train_start_time", time.time())
+        stopped = getattr(self, "_train_stopped", False)
+        csv_path = self._resolve_results_csv()
+        run_dir = csv_path.parent if csv_path else None
+        weights = (run_dir / "weights" / "best.pt") if run_dir else None
+
+        if weights:
             self.train_log.append(f"[done] Best weights (if produced): {weights}")
+        if exit_code == 0 and not stopped:
             self.status.showMessage("Training finished.", 8000)
         else:
             self.status.showMessage(f"Training exited with code {exit_code}.", 8000)
+
         self.train_start_btn.setEnabled(True)
         self.train_stop_btn.setEnabled(False)
         self._train_process = None
+        self._show_training_summary(exit_code, stopped, elapsed, csv_path, run_dir, weights)
+
+    def _show_training_summary(self, exit_code, stopped, elapsed, csv_path, run_dir, weights) -> None:
+        """Popup summarizing the finished run: validation metrics, time, paths."""
+        params = self._gather_train_params()
+        dur = training_logic.format_duration(elapsed)
+
+        summary = {}
+        if csv_path and Path(csv_path).exists():
+            try:
+                rows = training_logic.parse_results_csv(Path(csv_path).read_text(encoding="utf-8", errors="replace"))
+                summary = training_logic.summarize_results(rows)
+            except Exception:
+                summary = {}
+
+        lines: list[str] = []
+        if stopped:
+            headline = "Training stopped by user."
+        elif exit_code == 0:
+            headline = "Training completed successfully."
+        else:
+            headline = f"Training exited with code {exit_code} (it may not have finished)."
+        lines.append(headline)
+        lines.append("")
+        lines.append(f"Task / model: {params.get('task')} · {params.get('model')}")
+        lines.append(f"Dataset: {params.get('data') or '(none)'}")
+        lines.append(f"Time spent training: {dur}")
+
+        epochs_done = summary.get("rows", 0)
+        if epochs_done:
+            lines.append(f"Epochs recorded: {epochs_done} (requested {params.get('epochs')})")
+
+        def _metric_block(title: str, metrics: dict, epoch: int | None = None) -> None:
+            if not metrics:
+                return
+            suffix = f" (epoch {epoch})" if epoch is not None else ""
+            lines.append("")
+            lines.append(f"{title}{suffix}:")
+            order = ["precision", "recall", "mAP50", "mAP50-95"]
+            for key in order:
+                if key in metrics:
+                    lines.append(f"  • {key}: {metrics[key]:.4f}")
+
+        if summary.get("final") or summary.get("best"):
+            _metric_block("Final validation metrics", summary.get("final", {}))
+            _metric_block("Best validation metrics", summary.get("best", {}), summary.get("best_epoch"))
+        else:
+            lines.append("")
+            lines.append("No validation metrics were found in results.csv for this run.")
+
+        lines.append("")
+        if weights and Path(weights).exists():
+            lines.append(f"Best weights: {weights}")
+            lines.append("Use 'Use trained' under Evaluate and promote to score/promote it.")
+        elif weights:
+            lines.append(f"Best weights (expected): {weights}")
+        if run_dir:
+            lines.append(f"Run folder: {run_dir}")
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Training Summary")
+        box.setIcon(QMessageBox.Information if (exit_code == 0 and not stopped) else QMessageBox.Warning)
+        box.setText(headline)
+        box.setInformativeText("\n".join(lines[2:]))  # body after the headline + blank
+        box.setStandardButtons(QMessageBox.Ok)
+        box.exec()
 
     def stop_training(self) -> None:
         if self._train_process is None:
             return
+        self._train_stopped = True
         self.train_log.append("\n[stop] Stopping training...")
         self._train_process.kill()
 
