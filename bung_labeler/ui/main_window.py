@@ -1590,7 +1590,7 @@ class MainWindow(QMainWindow):
         delete_selected = QPushButton("Delete Image")
         delete_selected.clicked.connect(self.delete_selected_image)
         import_images_btn = QPushButton("Import Images...")
-        import_images_btn.setToolTip("Copy existing image files from disk into this recipe so they can be labeled.")
+        import_images_btn.setToolTip("Copy existing image files into this recipe. A BungVision sidecar .json next to an image is imported with its bounding boxes.")
         import_images_btn.clicked.connect(self.import_images_to_recipe)
         for btn in (load_selected, delete_selected, import_images_btn):
             btn.setProperty("compactCaptureButton", True)
@@ -4356,7 +4356,7 @@ class MainWindow(QMainWindow):
         self._set_dataset_summary_label(totals)
 
     def import_images_to_recipe(self) -> None:
-        """Copy external image files into the current recipe's capture folder."""
+        """Copy external image files (plus any sidecar label JSON) into the recipe."""
         self.recipe = self._current_recipe_from_ui()
         exts = " ".join(f"*{e}" for e in IMPORT_IMAGE_EXTS)
         paths, _ = QFileDialog.getOpenFileNames(
@@ -4365,15 +4365,21 @@ class MainWindow(QMainWindow):
         )
         if not paths:
             return
-        imported, errors = import_images(self.recipe, [Path(p) for p in paths])
+        imported, errors, label_count = import_images(self.recipe, [Path(p) for p in paths])
         self._reset_recipe_image_index()
         self._refresh_images(force=True)
-        msg = f"Imported {len(imported)} image(s) into {self.recipe.group} / {self.recipe.model}."
+        msg = (
+            f"Imported {len(imported)} image(s) into {self.recipe.group} / {self.recipe.model}.\n"
+            f"Imported {label_count} sidecar label file(s)."
+        )
         if errors:
             msg += f"\n\nSkipped {len(errors)}:\n" + "\n".join(f"• {e}" for e in errors[:10])
             QMessageBox.warning(self, "Import Images", msg)
         else:
-            self.status.showMessage(msg, 8000)
+            QMessageBox.information(self, "Import Images", msg)
+        self.status.showMessage(
+            f"Imported {len(imported)} image(s), {label_count} label file(s).", 8000
+        )
 
     def _recipe_health_tally(self, recipe: Recipe) -> dict:
         """Walk one recipe's captures + sidecars into a dataset-health tally."""
