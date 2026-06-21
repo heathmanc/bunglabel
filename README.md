@@ -1,7 +1,7 @@
 # BungVision Label Studio
 
-**Current target version:** v0.9.46  
-**Package reviewed:** `bung_labeling_tool_v0_9_46_active_learning.zip`  
+**Current target version:** v0.9.47  
+**Package reviewed:** `bung_labeling_tool_v0_9_47_in_app_training.zip`  
 **Purpose:** custom PySide6 labeling/capture/training utility for BungVision battery bung inspection.
 
 This is **not** the commercial HumanSignal Label Studio project. It is a custom Python/PySide6 desktop tool used to capture, review, label, and export training images for the BungVision machine-vision system.
@@ -192,6 +192,7 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 │   │   ├── relabel.py
 │   │   ├── review.py
 │   │   ├── storage.py
+│   │   ├── training.py
 │   │   └── yolo_export.py
 │   └── ui/
 │       ├── assets/
@@ -203,7 +204,8 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 │   ├── test_export_report.py
 │   ├── test_geometry.py
 │   ├── test_relabel.py
-│   └── test_review.py
+│   ├── test_review.py
+│   └── test_training.py
 └── data/
     ├── camera_settings.json
     ├── class_config.json
@@ -603,6 +605,17 @@ yolo obb train model=yolo11s-obb.pt data=data/exports/all_recipes_obb/data.yaml 
 
 The user commonly prefers `imgsz=736` for BungVision work.
 
+### In-app training (Train tab, v0.9.47)
+
+The **Train** tab launches Ultralytics YOLO training from inside the app instead of requiring a separate terminal:
+
+- Pick **Task** (obb/detect/…), **Base model** (e.g. `yolo11s-obb.pt` or a checkpoint), and **Data YAML** (an export's `data.yaml`; **Latest export** fills the most recent one and matches the task from `task.txt`).
+- Set **imgsz**, **batch** (`-1` = Ultralytics auto-batch), **epochs**, **patience**, **workers**, **device**, **output folder**, and **run name**.
+- **Start Training** runs the `yolo` CLI in a background `QProcess` — the UI stays responsive, output streams into the log, and **Stop** cancels the run. Best weights land in `<output folder>/<run name>/weights/best.pt`.
+- Parameters persist between sessions (`data/training_settings.json`). If `yolo` is not on PATH, set a full path in the **yolo executable** field.
+
+The command is built and validated by the pure, unit-tested `core/training.py`; the app layer only runs it.
+
 ---
 
 ## 9.5. Labeling assistance (v0.9.44)
@@ -923,6 +936,7 @@ Key recent versions:
 - v0.9.44: model-assisted pre-labeling (Auto-label, Ctrl+L), annotation validation/linting (Validate, Ctrl+Shift+V), and canvas undo/redo (Ctrl+Z / Ctrl+Y)
 - v0.9.45: bulk relabel — reassign one class to another across a recipe's saved labels (Tools > Bulk relabel), with dry-run preview; changed images return to the review queue. Pure logic in `core/relabel.py`, unit-tested
 - v0.9.46: active-learning review queue — run the model across unreviewed images and order them by how much detections disagree with the recipe (Tools > Build review queue / Next in review queue, Ctrl+Shift+N). Pure scoring in `core/active_learning.py`, unit-tested
+- v0.9.47: in-app training — launch Ultralytics YOLO training from the Train tab (task, base model, data.yaml, imgsz, batch, epochs, device, output folder, etc.) as a cancelable background process with streamed logs. Pure command builder/validator in `core/training.py`, unit-tested
 
 ---
 
