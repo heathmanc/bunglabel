@@ -168,10 +168,12 @@ class TrainingMetricsChart(QWidget):
         metric_series = {k: v for k, v in self._series.items() if "loss" not in k.lower()}
 
         # Margins: leave room for a right Y axis only when there are metrics.
+        # The bottom band holds the epoch tick row plus a dedicated legend row so
+        # the legend never overlaps the axis labels.
         left = 52
         right = 52 if metric_series else 14
-        top = 22
-        bottom = 24
+        top = 16
+        bottom = 44
         plot = QRectF(
             full.left() + left, full.top() + top,
             max(1, full.width() - left - right),
@@ -243,21 +245,8 @@ class TrainingMetricsChart(QWidget):
         p.drawLine(QPointF(plot.left(), plot.bottom()), QPointF(plot.right(), plot.bottom()))
         if metric_series:
             p.drawLine(QPointF(plot.right(), plot.top()), QPointF(plot.right(), plot.bottom()))
-        # Captions: epoch (x), and which side is which.
-        p.setPen(QColor(self._TEXT))
-        p.drawText(QRectF(plot.left(), full.bottom() - 14, plot.width(), 14),
-                   Qt.AlignCenter, "epoch")
-        if loss_series:
-            p.drawText(QRectF(full.left(), full.top() + 2, left + 30, 14),
-                       Qt.AlignLeft | Qt.AlignVCenter, "loss ↓")
-        if metric_series:
-            p.setPen(QColor(self._COLORS.get("mAP50", self._TEXT)))
-            p.drawText(QRectF(plot.right() - 30, full.top() + 2, right + 30, 14),
-                       Qt.AlignRight | Qt.AlignVCenter, "mAP ↑")
 
         # --- Series lines ---
-        legend_x = plot.left() + 36
-        legend_y = full.top() + 14
         for name, values in self._series.items():
             color = QColor(self._COLORS.get(name, self._DEFAULT))
             ymap = py_right if name in metric_series else py_left
@@ -271,10 +260,22 @@ class TrainingMetricsChart(QWidget):
                 else:
                     p.drawEllipse(pt, 2, 2)
                 prev = pt
-            label = f"{name} {self._fmt(values[-1])}"
+
+        # --- Legend on its own row along the bottom (below the epoch ticks) ---
+        # Right-axis (mAP) series get an (R) marker so the dual axes are clear.
+        entries = []
+        for name, values in self._series.items():
+            suffix = " (R)" if name in metric_series else ""
+            entries.append((name, f"{name} {self._fmt(values[-1])}{suffix}"))
+        spacing = 16
+        total_w = sum(fm.horizontalAdvance(text) for _n, text in entries) + spacing * max(0, len(entries) - 1)
+        legend_x = max(full.left() + 6, full.left() + (full.width() - total_w) / 2)
+        legend_y = full.bottom() - 5
+        for name, text in entries:
+            color = QColor(self._COLORS.get(name, self._DEFAULT))
             p.setPen(color)
-            p.drawText(QPointF(legend_x, legend_y), label)
-            legend_x += fm.horizontalAdvance(label) + 16
+            p.drawText(QPointF(legend_x, legend_y), text)
+            legend_x += fm.horizontalAdvance(text) + spacing
         p.end()
 
 
