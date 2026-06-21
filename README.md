@@ -111,6 +111,7 @@ Recommended Python versions:
 | Basler camera capture | `core/camera.py` | `pypylon`, Basler Pylon runtime/SDK |
 | Dataset export | `core/yolo_export.py` | Python stdlib, `PyYAML` indirectly through Ultralytics use |
 | Review / quantity logic | `core/review.py` (pure, unit-tested in `tests/test_review.py`) | Python stdlib |
+| Geometry (point-in-polygon, angles) | `core/geometry.py` (pure, unit-tested in `tests/test_geometry.py`) | Python stdlib |
 | Model test / training | `ui/main_window.py` | `ultralytics`, PyTorch stack installed by Ultralytics |
 | TensorRT export | `ui/main_window.py` | Ultralytics export dependencies, NVIDIA TensorRT runtime/tooling |
 
@@ -183,6 +184,7 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 │   ├── version.py
 │   ├── core/
 │   │   ├── camera.py
+│   │   ├── geometry.py
 │   │   ├── image_adjust.py
 │   │   ├── review.py
 │   │   ├── storage.py
@@ -193,6 +195,7 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 │       ├── canvas.py
 │       └── main_window.py
 ├── tests/
+│   ├── test_geometry.py
 │   └── test_review.py
 └── data/
     ├── camera_settings.json
