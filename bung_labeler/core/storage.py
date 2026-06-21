@@ -22,6 +22,10 @@ TRAINING_SETTINGS_PATH = DATA_DIR / "training_settings.json"
 for d in (CAPTURE_DIR, LABEL_DIR, RECIPE_DIR, EXPORT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
+# Broad equipment category recipes fall under by default. The default category
+# is special-cased so legacy recipes keep their original on-disk safe_name.
+DEFAULT_CATEGORY = "General"
+
 
 DEFAULT_CLASSES = [
     {"id": 0, "name": "battery", "default_tool": "OBB", "enabled": True, "role": "battery"},
@@ -169,6 +173,11 @@ def save_training_settings(settings: dict[str, Any]) -> Path:
 class Recipe:
     group: str
     model: str
+    # Broad equipment category above group/model. Lets one install hold recipes
+    # for several machines and load/browse them separately. The default category
+    # keeps the legacy on-disk safe_name (group__model) so pre-category captures
+    # and labels stay attached to their recipes.
+    category: str = DEFAULT_CATEGORY
     expected_bungs: int = 6
     # When False, the recipe is unlocked from the battery/bung quantity check
     # so the tool can label arbitrary object classes (free-form labeling).
@@ -186,11 +195,15 @@ class Recipe:
     def safe_name(self) -> str:
         def clean(s: str) -> str:
             return "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in s.strip()) or "Unnamed"
-        return f"{clean(self.group)}__{clean(self.model)}"
+        base = f"{clean(self.group)}__{clean(self.model)}"
+        if str(self.category).strip() in ("", DEFAULT_CATEGORY):
+            # Legacy form: keeps existing capture/label folders working.
+            return base
+        return f"{clean(self.category)}__{base}"
 
 
-def recipe_path(group: str, model: str) -> Path:
-    r = Recipe(group=group, model=model)
+def recipe_path(group: str, model: str, category: str = DEFAULT_CATEGORY) -> Path:
+    r = Recipe(group=group, model=model, category=category)
     return RECIPE_DIR / f"{r.safe_name}.json"
 
 
@@ -217,6 +230,20 @@ def list_recipes() -> list[Recipe]:
         except Exception:
             continue
     return recipes
+
+
+def recipe_category(recipe: Recipe) -> str:
+    """Category for a recipe, falling back to the default for legacy recipes."""
+    cat = str(getattr(recipe, "category", "") or "").strip()
+    return cat or DEFAULT_CATEGORY
+
+
+def list_categories() -> list[str]:
+    """Sorted, de-duplicated categories across all saved recipes (default first)."""
+    cats = {recipe_category(r) for r in list_recipes()}
+    cats.add(DEFAULT_CATEGORY)
+    ordered = sorted(c for c in cats if c != DEFAULT_CATEGORY)
+    return [DEFAULT_CATEGORY] + ordered
 
 
 def capture_folder(recipe: Recipe) -> Path:
