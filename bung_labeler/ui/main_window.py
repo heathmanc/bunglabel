@@ -1590,7 +1590,7 @@ class MainWindow(QMainWindow):
         delete_selected = QPushButton("Delete Image")
         delete_selected.clicked.connect(self.delete_selected_image)
         import_images_btn = QPushButton("Import Images...")
-        import_images_btn.setToolTip("Copy existing image files into this recipe. A BungVision sidecar .json next to an image is imported with its bounding boxes.")
+        import_images_btn.setToolTip("Copy existing image files into this recipe. You can optionally specify a separate folder containing matching BungVision label JSON files.")
         import_images_btn.clicked.connect(self.import_images_to_recipe)
         for btn in (load_selected, delete_selected, import_images_btn):
             btn.setProperty("compactCaptureButton", True)
@@ -4365,7 +4365,25 @@ class MainWindow(QMainWindow):
         )
         if not paths:
             return
-        imported, errors, label_count = import_images(self.recipe, [Path(p) for p in paths])
+
+        # Ask whether label JSON files are in a separate directory.
+        json_dir: Path | None = None
+        ask = QMessageBox(self)
+        ask.setWindowTitle("Import Labels")
+        ask.setText(
+            "Do you have a separate folder containing the matching label JSON files?\n\n"
+            "Choose 'Yes' to point to that folder, or 'No' if labels are next to the images (or there are none)."
+        )
+        ask.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        ask.setDefaultButton(QMessageBox.Yes)
+        if ask.exec() == QMessageBox.Yes:
+            chosen = QFileDialog.getExistingDirectory(
+                self, "Select label JSON folder", str(Path(paths[0]).parent),
+            )
+            if chosen:
+                json_dir = Path(chosen)
+
+        imported, errors, label_count = import_images(self.recipe, [Path(p) for p in paths], json_dir=json_dir)
         self._reset_recipe_image_index()
         self._refresh_images(force=True)
         msg = (

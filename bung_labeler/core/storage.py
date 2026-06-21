@@ -275,31 +275,46 @@ def save_capture(recipe: Recipe, frame_bgr: np.ndarray, adjusted_bgr: np.ndarray
 IMPORT_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
 
 
-def find_sidecar_json(image_src: Path) -> Path | None:
-    """Locate a BungVision-style sidecar label JSON next to a source image.
+def find_sidecar_json(image_src: Path, json_dir: Path | None = None) -> Path | None:
+    """Locate a BungVision-style sidecar label JSON for a source image.
 
-    Supports both ``foo.json`` (stem) and ``foo.jpg.json`` (full-name) layouts
-    that BungVision/Label-Studio exports use.
+    If ``json_dir`` is given the JSON is looked up there (parallel-directory
+    layout: images and labels live in separate sibling folders).  Otherwise
+    the JSON is looked up next to the image file (co-located layout).
+
+    Supports both ``foo.json`` (stem) and ``foo.jpg.json`` (full-name) naming.
     """
-    candidates = [
-        image_src.with_suffix(".json"),
-        Path(str(image_src) + ".json"),
-    ]
+    if json_dir is not None:
+        candidates = [
+            json_dir / f"{image_src.stem}.json",
+            json_dir / f"{image_src.name}.json",
+        ]
+    else:
+        candidates = [
+            image_src.with_suffix(".json"),
+            Path(str(image_src) + ".json"),
+        ]
     for c in candidates:
         if c.exists():
             return c
     return None
 
 
-def import_images(recipe: Recipe, paths: list[Path | str]) -> tuple[list[Path], list[str], int]:
+def import_images(
+    recipe: Recipe,
+    paths: list[Path | str],
+    json_dir: Path | None = None,
+) -> tuple[list[Path], list[str], int]:
     """Copy external images (and any sidecar label JSON) into a recipe.
 
     Each source image is decoded and re-encoded to JPEG under the recipe's
-    normal naming convention so it shows up in the captured-image list. If a
-    BungVision-style sidecar ``.json`` sits next to the image, its boxes and
-    review/source metadata are written into the recipe's label folder under the
-    new image name, so imported labels appear immediately (unreviewed ones show
-    as "needs review", matching the existing BungVision import behavior).
+    normal naming convention so it shows up in the captured-image list.
+
+    If ``json_dir`` is supplied, the matching ``.json`` label file is looked up
+    there (parallel-directory layout).  Otherwise the JSON is expected to sit
+    next to the image (co-located layout).  When a sidecar is found, its boxes
+    and review/source metadata are written into the recipe's label folder under
+    the new image name so imported labels appear immediately.
 
     Returns (imported_paths, errors, label_count).
     """
@@ -320,7 +335,7 @@ def import_images(recipe: Recipe, paths: list[Path | str]) -> tuple[list[Path], 
             cv2.imwrite(str(dest), img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
             imported.append(dest)
 
-            sidecar = find_sidecar_json(src)
+            sidecar = find_sidecar_json(src, json_dir=json_dir)
             if sidecar is not None:
                 try:
                     data = json.loads(sidecar.read_text(encoding="utf-8"))
