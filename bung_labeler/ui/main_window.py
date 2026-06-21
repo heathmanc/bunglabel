@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QDoubleSpinBox,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -902,13 +904,22 @@ class MainWindow(QMainWindow):
         self.expected_spin.setFixedWidth(48)
         self.expected_spin.setPlaceholderText("6")
         self.expected_spin.editingFinished.connect(self._sync_expected_bungs_from_text)
+        self.constrained_check = QCheckBox("Enforce battery / bung quantity check")
+        self.constrained_check.setChecked(bool(getattr(self.recipe, "constrained", True)))
+        self.constrained_check.setToolTip(
+            "On: review requires every battery to hold the expected number of bungs.\n"
+            "Off: free-form labeling for any object classes (no battery/bung check)."
+        )
+        self.constrained_check.toggled.connect(self._on_constrained_toggled)
         self.notes_edit = QTextEdit()
         self.notes_edit.setFixedHeight(54)
         self.notes_edit.setPlaceholderText("Notes, lighting setup, lens height, battery family, etc.")
         form.addRow("Group", self.group_edit)
         form.addRow("Model", self.model_edit)
         form.addRow("Expected bungs", self.expected_spin)
+        form.addRow("Quantity check", self.constrained_check)
         form.addRow("Notes", self.notes_edit)
+        self.expected_spin.setEnabled(self.constrained_check.isChecked())
 
         save_btn = QPushButton("Save Recipe")
         save_btn.clicked.connect(self.save_recipe_from_ui)
@@ -1348,7 +1359,10 @@ class MainWindow(QMainWindow):
         exp.clicked.connect(self.export_yolo)
         exp_all = QPushButton("Export All")
         exp_all.clicked.connect(self.export_all_yolo)
-        for btn in (exp, exp_all):
+        exp_sel = QPushButton("Export Selected...")
+        exp_sel.setToolTip("Pick which recipes to combine into one export dataset.")
+        exp_sel.clicked.connect(self.export_selected_yolo)
+        for btn in (exp, exp_all, exp_sel):
             btn.setProperty("rightPanelButton", True)
             btn.setMinimumHeight(24)
             btn.setMaximumHeight(26)
@@ -1358,11 +1372,15 @@ class MainWindow(QMainWindow):
         export_btn_row.setSpacing(6)
         export_btn_row.addWidget(exp)
         export_btn_row.addWidget(exp_all)
+        export_btn_row2 = QHBoxLayout()
+        export_btn_row2.setSpacing(6)
+        export_btn_row2.addWidget(exp_sel)
         ev.addWidget(QLabel("Export task"))
         ev.addWidget(self.export_task_combo)
         ev.addWidget(QLabel("Class export mode"))
         ev.addWidget(self.export_class_mode)
         ev.addLayout(export_btn_row)
+        ev.addLayout(export_btn_row2)
         export_note = QLabel("YOLO OBB export. Reviewed and force-reviewed images only.")
         export_note.setWordWrap(True)
         export_note.setStyleSheet("color: #94a3b8;")
@@ -1889,6 +1907,7 @@ class MainWindow(QMainWindow):
             group=self.group_edit.text().strip() or "Default",
             model=self.model_edit.text().strip() or "Battery_Model",
             expected_bungs=self._expected_bungs_value(),
+            constrained=self.constrained_check.isChecked() if hasattr(self, "constrained_check") else True,
             brightness=self.brightness_slider.value(),
             contrast=self.contrast_slider.value(),
             gamma=self.gamma_slider.value() / 100.0,
@@ -1931,6 +1950,8 @@ class MainWindow(QMainWindow):
                 self.recipe = r
                 self.group_edit.setText(r.group)
                 self.model_edit.setText(r.model)
+                if hasattr(self, "constrained_check"):
+                    self.constrained_check.setChecked(bool(getattr(r, "constrained", True)))
                 self._set_int_line_value(self.expected_spin, r.expected_bungs)
                 if hasattr(self, "count_required_spin"):
                     self._set_int_line_value(self.count_required_spin, r.expected_bungs)
@@ -1950,8 +1971,7 @@ class MainWindow(QMainWindow):
 
     def _review_record(self, reason: str = "operator_review", *, force: bool = False, counts: tuple[int, int] | None = None) -> dict:
         counts = counts if counts is not None else self._current_label_counts()
-        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-        return review_logic.make_review_record(reason, force=force, counts=counts, expected=int(expected))
+        return review_logic.make_review_record(reason, force=force, counts=counts, expected=self._constraint_expected())
 
     def _annotation_reviewed(self, data: dict | None) -> bool:
         return review_logic.annotation_reviewed(data)
@@ -2717,8 +2737,7 @@ class MainWindow(QMainWindow):
         if not boxes:
             QMessageBox.information(self, "Validate", "This image has no labels to validate.")
             return
-        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-        issues = review_logic.validate_boxes(boxes, self.canvas.image_w, self.canvas.image_h, int(expected))
+        issues = review_logic.validate_boxes(boxes, self.canvas.image_w, self.canvas.image_h, self._constraint_expected())
         if not issues:
             QMessageBox.information(self, "Validate", "No label-quality issues found.")
         else:
@@ -3469,13 +3488,32 @@ class MainWindow(QMainWindow):
     def _counts_from_box_dicts(self, boxes: list[dict]) -> tuple[int, int]:
         return review_logic.counts_from_boxes(boxes)
 
+    def _recipe_constrained(self) -> bool:
+        """Whether the active recipe enforces the battery/bung quantity check."""
+        if hasattr(self, "constrained_check"):
+            return self.constrained_check.isChecked()
+        return bool(getattr(self.recipe, "constrained", True))
+
+    def _constraint_expected(self) -> int:
+        """Expected bungs for the constraint, or 0 when the recipe is unlocked
+        from the battery/bung check (free-form labeling)."""
+        if not self._recipe_constrained():
+            return 0
+        return int(self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs)
+
+    def _on_constrained_toggled(self, checked: bool) -> None:
+        if hasattr(self, "expected_spin"):
+            self.expected_spin.setEnabled(checked)
+        # OK/CHECK status depends on whether the constraint applies.
+        self._image_status_cache.clear()
+        self._refresh_images()
+        self._update_dataset_summary()
+
     def _quantities_satisfied(self, boxes: list[dict]) -> bool:
-        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-        return review_logic.quantities_satisfied(boxes, int(expected))
+        return review_logic.quantities_satisfied(boxes, self._constraint_expected())
 
     def _quantity_summary_text(self, boxes: list[dict]) -> str:
-        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
-        return review_logic.quantity_summary_text(boxes, int(expected))
+        return review_logic.quantity_summary_text(boxes, self._constraint_expected())
 
     def mark_current_reviewed(self) -> None:
         if not self.current_image_path:
@@ -3872,6 +3910,79 @@ class MainWindow(QMainWindow):
             f"Task:\n{task}\nClass mode:\n{mode}\nReview filter:\nreviewed only"
         )
         self.status.showMessage(f"Exported combined YOLO {task} dataset: {out}", 8000)
+
+    def _prompt_recipe_selection(self) -> list[str] | None:
+        """Modal checklist of recipes; returns chosen safe_names or None if cancelled."""
+        recipes = list_recipes()
+        if not recipes:
+            QMessageBox.information(self, "Export Selected", "No saved recipes to export.")
+            return None
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Select recipes to export")
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("Choose which recipes to combine into one export dataset:"))
+        listw = QListWidget()
+        for r in recipes:
+            item = QListWidgetItem(f"{r.group} / {r.model}")
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            # Pre-check the active recipe so the common case is one click.
+            checked = (r.safe_name == self.recipe.safe_name)
+            item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole, r.safe_name)
+            listw.addItem(item)
+        v.addWidget(listw)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        v.addWidget(buttons)
+        if dlg.exec() != QDialog.Accepted:
+            return None
+
+        chosen = [
+            listw.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(listw.count())
+            if listw.item(i).checkState() == Qt.CheckState.Checked
+        ]
+        if not chosen:
+            QMessageBox.information(self, "Export Selected", "No recipes were selected.")
+            return None
+        return chosen
+
+    def export_selected_yolo(self) -> None:
+        self.save_recipe_from_ui()
+        chosen = self._prompt_recipe_selection()
+        if not chosen:
+            return
+        mode = self._export_mode()
+        task = self._export_task()
+        reviewed_only = self._export_reviewed_only()
+        try:
+            if task == "obb":
+                out = export_all_recipes_obb(
+                    export_name="selected_recipes_obb", class_mode=mode,
+                    reviewed_only=reviewed_only, recipe_names=chosen,
+                )
+            else:
+                out = export_all_recipes_yolo(
+                    export_name="selected_recipes_yolo", class_mode=mode,
+                    reviewed_only=reviewed_only, recipe_names=chosen,
+                )
+        except Exception as e:
+            QMessageBox.warning(self, "Export Selected Recipes", str(e))
+            return
+        data_yaml = out / "data.yaml"
+        manifest = out / "manifest.csv"
+        summary = self._export_count_summary(out)
+        QMessageBox.information(
+            self,
+            "Export Selected complete",
+            f"Selected {len(chosen)} recipe(s) exported to:\n{out}\n\n"
+            f"Training file:\n{data_yaml}\nManifest:\n{manifest}\n\n"
+            f"Export counts:\n{summary}\n\n"
+            f"Task:\n{task}\nClass mode:\n{mode}\nReview filter:\nreviewed only"
+        )
+        self.status.showMessage(f"Exported {len(chosen)} selected recipes ({task}): {out}", 8000)
 
 
 def main() -> None:

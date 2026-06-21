@@ -170,6 +170,9 @@ class Recipe:
     group: str
     model: str
     expected_bungs: int = 6
+    # When False, the recipe is unlocked from the battery/bung quantity check
+    # so the tool can label arbitrary object classes (free-form labeling).
+    constrained: bool = True
     brightness: int = 0
     contrast: int = 0
     gamma: float = 1.0
