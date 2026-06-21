@@ -78,6 +78,7 @@ from bung_labeler.core import export_report
 from bung_labeler.core import relabel as relabel_logic
 from bung_labeler.core import active_learning
 from bung_labeler.core import training as training_logic
+from bung_labeler.core import evaluation as evaluation_logic
 from bung_labeler.version import APP_TITLE
 from bung_labeler.ui.canvas import ImageCanvas
 
@@ -552,13 +553,156 @@ class MainWindow(QMainWindow):
 
         self.train_log = QTextEdit()
         self.train_log.setReadOnly(True)
-        self.train_log.setMinimumHeight(180)
+        self.train_log.setMinimumHeight(140)
         self.train_log.setPlaceholderText("Training output appears here.")
         layout.addWidget(self.train_log)
+
+        # --- Evaluate / promote -------------------------------------------
+        eval_box = QGroupBox("Evaluate and promote")
+        eval_layout = QVBoxLayout(eval_box)
+        eval_help = QLabel(
+            "Score a trained model against a labeled split (uses the Data YAML and "
+            "Task above), then promote it so Test/Auto-label/Count use it."
+        )
+        eval_help.setWordWrap(True)
+        eval_layout.addWidget(eval_help)
+
+        self.eval_model_edit = QLineEdit()
+        self.eval_model_edit.setPlaceholderText("trained best.pt to evaluate")
+        eval_model_browse = QPushButton("Model...")
+        eval_model_browse.clicked.connect(self.browse_eval_model)
+        eval_use_trained = QPushButton("Use trained")
+        eval_use_trained.setToolTip("Fill in <output folder>/<run name>/weights/best.pt from the training settings above.")
+        eval_use_trained.clicked.connect(self.use_trained_weights_for_eval)
+        r = QHBoxLayout(); r.addWidget(self.eval_model_edit); r.addWidget(eval_model_browse); r.addWidget(eval_use_trained)
+        eval_layout.addWidget(QLabel("Model to evaluate")); eval_layout.addLayout(r)
+
+        split_row = QHBoxLayout()
+        split_row.addWidget(QLabel("Split"))
+        self.eval_split_combo = QComboBox()
+        self.eval_split_combo.addItems(list(evaluation_logic.VALID_SPLITS))
+        split_row.addWidget(self.eval_split_combo)
+        self.eval_start_btn = QPushButton("Evaluate")
+        self.eval_start_btn.clicked.connect(self.start_evaluation)
+        self.promote_btn = QPushButton("Promote model")
+        self.promote_btn.setEnabled(False)
+        self.promote_btn.setToolTip("Copy this model into data/models and set it as the active model for Test / Auto-label / Count / review queue.")
+        self.promote_btn.clicked.connect(self.promote_model)
+        split_row.addWidget(self.eval_start_btn); split_row.addWidget(self.promote_btn)
+        eval_layout.addLayout(split_row)
+
+        self.eval_metrics_text = QTextEdit()
+        self.eval_metrics_text.setReadOnly(True)
+        self.eval_metrics_text.setMinimumHeight(140)
+        self.eval_metrics_text.setPlaceholderText("mAP / precision / recall appear here after evaluation.")
+        eval_layout.addWidget(self.eval_metrics_text)
+        layout.addWidget(eval_box)
         layout.addStretch(1)
 
         self._train_process = None
+        self._eval_process = None
+        self._eval_buffer = ""
+        self._eval_last_model = ""
         return w
+
+    def _gather_eval_params(self) -> dict:
+        return {
+            "task": self.train_task_combo.currentText(),
+            "model": self.eval_model_edit.text().strip(),
+            "data": self.train_data_edit.text().strip(),
+            "imgsz": int(self.train_imgsz_spin.value()),
+            "device": self.train_device_edit.text().strip(),
+            "split": self.eval_split_combo.currentText(),
+        }
+
+    def browse_eval_model(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select model to evaluate", "", "Model (*.pt *.engine);;All files (*)")
+        if path:
+            self.eval_model_edit.setText(path)
+
+    def use_trained_weights_for_eval(self) -> None:
+        project = self.train_project_edit.text().strip() or "data/training"
+        name = self.train_name_edit.text().strip() or "bungvision"
+        best = Path(project) / name / "weights" / "best.pt"
+        self.eval_model_edit.setText(str(best))
+        if not best.exists():
+            self.status.showMessage("Trained best.pt not found yet; train first or browse to a checkpoint.", 6000)
+
+    def start_evaluation(self) -> None:
+        if self._eval_process is not None:
+            QMessageBox.information(self, "Evaluate", "An evaluation is already in progress.")
+            return
+        params = self._gather_eval_params()
+        errors = evaluation_logic.validate_eval_params(params)
+        if errors:
+            QMessageBox.warning(self, "Evaluate", "Cannot evaluate:\n\n" + "\n".join(f"• {e}" for e in errors))
+            return
+        cmd = evaluation_logic.build_eval_command(sys.executable, params)
+
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.MergedChannels)
+        proc.setWorkingDirectory(str(DATA_DIR.parent))
+        proc.readyReadStandardOutput.connect(self._on_eval_stdout)
+        proc.finished.connect(self._on_eval_finished)
+        proc.errorOccurred.connect(self._on_eval_error)
+        self._eval_process = proc
+        self._eval_buffer = ""
+        self._eval_last_model = params["model"]
+
+        self.eval_metrics_text.setPlainText("Running evaluation...\n$ " + " ".join(cmd) + "\n")
+        self.eval_start_btn.setEnabled(False)
+        self.promote_btn.setEnabled(False)
+        self.status.showMessage("Evaluating model...", 5000)
+        proc.start(cmd[0], cmd[1:])
+
+    def _on_eval_stdout(self) -> None:
+        if self._eval_process is None:
+            return
+        data = bytes(self._eval_process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        if data:
+            self._eval_buffer += data
+
+    def _on_eval_error(self, _error) -> None:
+        self.eval_metrics_text.append("\n[error] Could not run evaluation. Check that Ultralytics is installed.")
+
+    def _on_eval_finished(self, exit_code: int, _status) -> None:
+        metrics = evaluation_logic.parse_metrics_output(self._eval_buffer)
+        self._eval_process = None
+        self.eval_start_btn.setEnabled(True)
+        if exit_code == 0 and metrics:
+            self.eval_metrics_text.setPlainText(evaluation_logic.format_metrics(metrics))
+            self.promote_btn.setEnabled(bool(self._eval_last_model))
+            self.status.showMessage("Evaluation complete.", 6000)
+        else:
+            tail = "\n".join(self._eval_buffer.strip().splitlines()[-15:])
+            self.eval_metrics_text.setPlainText(
+                f"Evaluation exited with code {exit_code} and no metrics were parsed.\n\n{tail}"
+            )
+            self.status.showMessage("Evaluation failed; see the metrics panel.", 8000)
+
+    def promote_model(self) -> None:
+        model = self._eval_last_model or self.eval_model_edit.text().strip()
+        if not model or not Path(model).exists():
+            QMessageBox.information(self, "Promote", "Evaluate a model first; its file must exist to promote.")
+            return
+        import shutil
+        models_dir = DATA_DIR / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        name = (self.train_name_edit.text().strip() or "model")
+        dest = models_dir / f"{name}{Path(model).suffix or '.pt'}"
+        try:
+            shutil.copy2(model, dest)
+        except Exception as e:
+            QMessageBox.warning(self, "Promote", f"Could not copy model:\n{e}")
+            return
+        # Make the promoted model the active one for test/auto-label/count/queue.
+        if hasattr(self, "test_model_edit"):
+            self.test_model_edit.setText(str(dest))
+        QMessageBox.information(
+            self, "Promote",
+            f"Promoted model to:\n{dest}\n\nIt is now the active model for Test, Auto-label, Count, and the review queue.",
+        )
+        self.status.showMessage(f"Promoted model: {dest.name}", 8000)
 
     def _gather_train_params(self) -> dict:
         return {

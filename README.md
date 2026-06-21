@@ -1,7 +1,7 @@
 # BungVision Label Studio
 
-**Current target version:** v0.9.47  
-**Package reviewed:** `bung_labeling_tool_v0_9_47_in_app_training.zip`  
+**Current target version:** v0.9.48  
+**Package reviewed:** `bung_labeling_tool_v0_9_48_train_and_eval.zip`  
 **Purpose:** custom PySide6 labeling/capture/training utility for BungVision battery bung inspection.
 
 This is **not** the commercial HumanSignal Label Studio project. It is a custom Python/PySide6 desktop tool used to capture, review, label, and export training images for the BungVision machine-vision system.
@@ -189,11 +189,13 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 │   │   ├── export_report.py
 │   │   ├── geometry.py
 │   │   ├── image_adjust.py
+│   │   ├── evaluation.py
 │   │   ├── relabel.py
 │   │   ├── review.py
 │   │   ├── storage.py
 │   │   ├── training.py
 │   │   └── yolo_export.py
+│   ├── eval_runner.py
 │   └── ui/
 │       ├── assets/
 │       │   └── checkbox_check.svg
@@ -203,6 +205,7 @@ The real Python package name is `bung_labeler` with an underscore. Do not use a 
 │   ├── test_active_learning.py
 │   ├── test_export_report.py
 │   ├── test_geometry.py
+│   ├── test_evaluation.py
 │   ├── test_relabel.py
 │   ├── test_review.py
 │   └── test_training.py
@@ -616,6 +619,16 @@ The **Train** tab launches Ultralytics YOLO training from inside the app instead
 
 The command is built and validated by the pure, unit-tested `core/training.py`; the app layer only runs it.
 
+### Evaluate and promote (Train tab, v0.9.48)
+
+Below training, the **Evaluate and promote** section closes the loop:
+
+- Pick a trained model (**Use trained** fills `<output folder>/<run name>/weights/best.pt`) and a **split** (val/test/train); the **Data YAML** and **Task** are shared with training above.
+- **Evaluate** runs `python -m bung_labeler.eval_runner` in the background. That thin Ultralytics wrapper computes metrics and prints a JSON block between sentinels, which the app parses and renders: overall **mAP50 / mAP50-95 / precision / recall** plus a **per-class precision/recall/mAP50** table.
+- **Promote model** copies the evaluated weights into `data/models/` and sets them as the active model for Test Models, Auto-label, Count Test, and the active-learning review queue — so you only adopt a model after seeing its numbers.
+
+`core/evaluation.py` (command building, metrics parsing, formatting) is pure and unit-tested; `eval_runner.py` is the only Ultralytics-dependent piece.
+
 ---
 
 ## 9.5. Labeling assistance (v0.9.44)
@@ -937,6 +950,7 @@ Key recent versions:
 - v0.9.45: bulk relabel — reassign one class to another across a recipe's saved labels (Tools > Bulk relabel), with dry-run preview; changed images return to the review queue. Pure logic in `core/relabel.py`, unit-tested
 - v0.9.46: active-learning review queue — run the model across unreviewed images and order them by how much detections disagree with the recipe (Tools > Build review queue / Next in review queue, Ctrl+Shift+N). Pure scoring in `core/active_learning.py`, unit-tested
 - v0.9.47: in-app training — launch Ultralytics YOLO training from the Train tab (task, base model, data.yaml, imgsz, batch, epochs, device, output folder, etc.) as a cancelable background process with streamed logs. Pure command builder/validator in `core/training.py`, unit-tested
+- v0.9.48: in-app evaluation + promote — score a trained model against a labeled split (mAP50, mAP50-95, per-class precision/recall via `eval_runner.py`) and promote it to the active model for Test/Auto-label/Count/review-queue. Pure command/parse/format in `core/evaluation.py`, unit-tested
 
 ---
 
