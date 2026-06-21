@@ -17,8 +17,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 import numpy as np
 
 import cv2
-from PySide6.QtCore import QTimer, Qt, QProcess
-from PySide6.QtGui import QAction, QKeySequence, QIntValidator, QTextCursor
+from PySide6.QtCore import QTimer, Qt, QProcess, QRectF, QPointF
+from PySide6.QtGui import QAction, QKeySequence, QIntValidator, QTextCursor, QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QGridLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -42,6 +43,8 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -64,6 +67,8 @@ from bung_labeler.core.storage import (
     recipe_category,
     recipe_path,
     DEFAULT_CATEGORY,
+    IMPORT_IMAGE_EXTS,
+    import_images,
     load_annotations,
     save_annotations,
     save_capture,
@@ -85,8 +90,88 @@ from bung_labeler.core import relabel as relabel_logic
 from bung_labeler.core import active_learning
 from bung_labeler.core import training as training_logic
 from bung_labeler.core import evaluation as evaluation_logic
+from bung_labeler.core import dataset_health
+from bung_labeler.core import class_stats
 from bung_labeler.version import APP_TITLE
 from bung_labeler.ui.canvas import ImageCanvas
+
+
+class TrainingMetricsChart(QWidget):
+    """Lightweight multi-series line chart for live training metrics.
+
+    Each series is normalized to its own min/max so the *shape* (is loss going
+    down, is mAP going up) is readable even though losses and mAP live on
+    different scales. The legend shows each series' latest raw value.
+    """
+
+    _COLORS = {
+        "box_loss": "#f87171",
+        "cls_loss": "#fb923c",
+        "mAP50": "#34d399",
+        "mAP50-95": "#60a5fa",
+    }
+    _DEFAULT = "#cbd5e1"
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._series: dict[str, list[float]] = {}
+        self.setMinimumHeight(160)
+        self.setToolTip(
+            "Live training curves from results.csv. Losses should trend down; "
+            "mAP should trend up. Each line is scaled to its own range."
+        )
+
+    def set_series(self, series: dict[str, list[float]]) -> None:
+        self._series = {k: list(v) for k, v in (series or {}).items() if v}
+        self.update()
+
+    def clear(self) -> None:
+        self._series = {}
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 (Qt signature)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        rect = self.rect().adjusted(8, 8, -8, -8)
+        p.fillRect(self.rect(), QColor("#0b1220"))
+        p.setPen(QPen(QColor("#1e293b"), 1))
+        p.drawRect(rect)
+
+        if not self._series:
+            p.setPen(QColor(self._DEFAULT))
+            p.drawText(rect, Qt.AlignCenter, "Training curves appear here once epochs complete.")
+            p.end()
+            return
+
+        plot = QRectF(rect.left() + 6, rect.top() + 6, rect.width() - 12, rect.height() - 28)
+        max_len = max(len(v) for v in self._series.values())
+        legend_x = plot.left()
+        legend_y = rect.bottom() - 6
+        for name, values in self._series.items():
+            color = QColor(self._COLORS.get(name, self._DEFAULT))
+            lo, hi = min(values), max(values)
+            span = (hi - lo) or 1.0
+            n = len(values)
+            p.setPen(QPen(color, 2))
+            if n == 1:
+                y = plot.bottom() - ((values[0] - lo) / span) * plot.height()
+                p.drawPoint(QPointF(plot.left(), y))
+            else:
+                step = plot.width() / max(1, (max_len - 1))
+                prev = None
+                for i, val in enumerate(values):
+                    x = plot.left() + i * step
+                    y = plot.bottom() - ((val - lo) / span) * plot.height()
+                    pt = QPointF(x, y)
+                    if prev is not None:
+                        p.drawLine(prev, pt)
+                    prev = pt
+            # Legend entry with latest raw value.
+            label = f"{name} {values[-1]:.3g}"
+            p.setPen(color)
+            p.drawText(QPointF(legend_x, legend_y), label)
+            legend_x += p.fontMetrics().horizontalAdvance(label) + 16
+        p.end()
 
 
 class MainWindow(QMainWindow):
@@ -292,6 +377,19 @@ class MainWindow(QMainWindow):
         next_queue_action.setShortcut("Ctrl+Shift+N")
         next_queue_action.triggered.connect(self.next_in_review_queue)
         tools_menu.addAction(next_queue_action)
+
+        tools_menu.addSeparator()
+
+        health_action = QAction("Dataset health dashboard", self)
+        health_action.triggered.connect(self.show_dataset_health)
+        tools_menu.addAction(health_action)
+
+        shortcuts_action = QAction("Keyboard shortcuts", self)
+        shortcuts_action.setShortcut("F1")
+        shortcuts_action.triggered.connect(self.show_shortcuts_reference)
+        tools_menu.addAction(shortcuts_action)
+        # Keep F1 working even though the menu bar is hidden.
+        self.addAction(shortcuts_action)
 
         self.menuBar().setVisible(False)
 
@@ -578,6 +676,19 @@ class MainWindow(QMainWindow):
         self.train_log.setPlaceholderText("Training output appears here.")
         layout.addWidget(self.train_log)
 
+        chart_box = QGroupBox("Live training curves")
+        chart_layout = QVBoxLayout(chart_box)
+        chart_layout.setContentsMargins(8, 8, 8, 8)
+        self.train_metrics_chart = TrainingMetricsChart()
+        chart_layout.addWidget(self.train_metrics_chart)
+        layout.addWidget(chart_box)
+
+        # Polls the run's results.csv while training so the chart updates per epoch.
+        self._results_csv_path: Path | None = None
+        self._metrics_timer = QTimer(self)
+        self._metrics_timer.setInterval(3000)
+        self._metrics_timer.timeout.connect(self._poll_training_metrics)
+
         # --- Evaluate / promote -------------------------------------------
         eval_box = QGroupBox("Evaluate and promote")
         eval_layout = QVBoxLayout(eval_box)
@@ -808,7 +919,30 @@ class MainWindow(QMainWindow):
         self.train_start_btn.setEnabled(False)
         self.train_stop_btn.setEnabled(True)
         self.status.showMessage("Training started...", 5000)
+
+        # Track this run's results.csv and start polling it for the live chart.
+        project = params.get("project") or "data/training"
+        name = params.get("name") or "bungvision"
+        self._results_csv_path = Path(project) / name / "results.csv"
+        if hasattr(self, "train_metrics_chart"):
+            self.train_metrics_chart.clear()
+        if hasattr(self, "_metrics_timer"):
+            self._metrics_timer.start()
+
         proc.start(cmd[0], cmd[1:])
+
+    def _poll_training_metrics(self) -> None:
+        """Re-read the active run's results.csv and refresh the live chart."""
+        path = getattr(self, "_results_csv_path", None)
+        if not path or not Path(path).exists() or not hasattr(self, "train_metrics_chart"):
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return
+        rows = training_logic.parse_results_csv(text)
+        if rows:
+            self.train_metrics_chart.set_series(training_logic.chart_series(rows))
 
     def _on_train_stdout(self) -> None:
         if self._train_process is None:
@@ -828,6 +962,9 @@ class MainWindow(QMainWindow):
         )
 
     def _on_train_finished(self, exit_code: int, _status) -> None:
+        if hasattr(self, "_metrics_timer"):
+            self._metrics_timer.stop()
+        self._poll_training_metrics()  # final refresh to catch the last epoch row
         self.train_log.append(f"\n[done] Training process exited with code {exit_code}.")
         if exit_code == 0:
             params = self._gather_train_params()
@@ -1194,7 +1331,10 @@ class MainWindow(QMainWindow):
         load_selected.clicked.connect(self._load_selected_image)
         delete_selected = QPushButton("Delete Image")
         delete_selected.clicked.connect(self.delete_selected_image)
-        for btn in (load_selected, delete_selected):
+        import_images_btn = QPushButton("Import Images...")
+        import_images_btn.setToolTip("Copy existing image files from disk into this recipe so they can be labeled.")
+        import_images_btn.clicked.connect(self.import_images_to_recipe)
+        for btn in (load_selected, delete_selected, import_images_btn):
             btn.setProperty("compactCaptureButton", True)
             btn.setMinimumHeight(24)
             btn.setMaximumHeight(26)
@@ -1206,6 +1346,10 @@ class MainWindow(QMainWindow):
         image_button_row.setSpacing(6)
         image_button_row.addWidget(load_selected)
         image_button_row.addWidget(delete_selected)
+        image_button_row2 = QHBoxLayout()
+        image_button_row2.setContentsMargins(0, 0, 0, 0)
+        image_button_row2.setSpacing(6)
+        image_button_row2.addWidget(import_images_btn)
 
         layout.addWidget(cam_box)
         layout.addWidget(control_box)
@@ -1213,6 +1357,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(list_header)
         layout.addWidget(self.image_list, 1)
         layout.addLayout(image_button_row)
+        layout.addLayout(image_button_row2)
         return outer
 
     def _slider(self, minv, maxv, val, cb) -> QSlider:
@@ -1327,11 +1472,25 @@ class MainWindow(QMainWindow):
                 row.addWidget(b)
             return row
 
+        health_btn = QPushButton("Dataset Health")
+        health_btn.setToolTip("Per-recipe / per-category readiness dashboard: labeled, reviewed, and export-ready counts.")
+        health_btn.clicked.connect(self.show_dataset_health)
+        shortcuts_btn = QPushButton("⌨ Shortcuts")
+        shortcuts_btn.setToolTip("Show the keyboard shortcut reference (F1).")
+        shortcuts_btn.clicked.connect(self.show_shortcuts_reference)
+        for btn in (health_btn, shortcuts_btn):
+            btn.setProperty("rightPanelButton", True)
+            btn.setMinimumHeight(24)
+            btn.setMaximumHeight(26)
+            btn.setMinimumWidth(0)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         v.addWidget(self.mode_label)
         v.addWidget(self.guidance_label)
         v.addLayout(form)
         v.addWidget(self.count_label)
         v.addWidget(self.dataset_label)
+        v.addLayout(button_row(health_btn, shortcuts_btn))
         v.addLayout(button_row(zminus, zfit, zplus))
         v.addLayout(button_row(save, save_next))
         v.addLayout(button_row(copy_prev, qa_btn))
@@ -1371,6 +1530,11 @@ class MainWindow(QMainWindow):
         class_btn_row.addWidget(add_class_btn)
         class_btn_row.addWidget(remove_class_btn)
         cv.addWidget(self.class_list_widget)
+        self.class_counts_label = QLabel("Current image: no labels")
+        self.class_counts_label.setWordWrap(True)
+        self.class_counts_label.setStyleSheet("color: #94a3b8;")
+        self.class_counts_label.setToolTip("Per-class box counts for the image currently on the canvas.")
+        cv.addWidget(self.class_counts_label)
         cv.addWidget(QLabel("New class name"))
         cv.addWidget(self.new_class_edit)
         cv.addWidget(QLabel("Default tool"))
@@ -3835,6 +3999,12 @@ class MainWindow(QMainWindow):
             self.count_label.setText(
                 f"Batteries: {battery_count}   Bungs: {bung_count} (need {expected}/battery)  [{state}]"
             )
+        if hasattr(self, "class_counts_label"):
+            counts = class_stats.count_labels(boxes)
+            total = sum(counts.values())
+            self.class_counts_label.setText(
+                f"Current image ({total} boxes): {class_stats.format_counts(counts)}"
+            )
         # Editing on-screen boxes does not change the on-disk dataset, so the
         # summary is refreshed by save/review/delete/capture and recipe changes
         # instead of walking every sidecar on each box draw/nudge.
@@ -3926,6 +4096,188 @@ class MainWindow(QMainWindow):
         for p in self._get_recipe_image_paths():
             self._accumulate_summary(totals, self._cached_image_status(p))
         self._set_dataset_summary_label(totals)
+
+    def import_images_to_recipe(self) -> None:
+        """Copy external image files into the current recipe's capture folder."""
+        self.recipe = self._current_recipe_from_ui()
+        exts = " ".join(f"*{e}" for e in IMPORT_IMAGE_EXTS)
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Import images into this recipe", "",
+            f"Images ({exts});;All files (*)",
+        )
+        if not paths:
+            return
+        imported, errors = import_images(self.recipe, [Path(p) for p in paths])
+        self._reset_recipe_image_index()
+        self._refresh_images(force=True)
+        msg = f"Imported {len(imported)} image(s) into {self.recipe.group} / {self.recipe.model}."
+        if errors:
+            msg += f"\n\nSkipped {len(errors)}:\n" + "\n".join(f"• {e}" for e in errors[:10])
+            QMessageBox.warning(self, "Import Images", msg)
+        else:
+            self.status.showMessage(msg, 8000)
+
+    def _recipe_health_tally(self, recipe: Recipe) -> dict:
+        """Walk one recipe's captures + sidecars into a dataset-health tally."""
+        tally = dataset_health.new_tally()
+        expected = int(getattr(recipe, "expected_bungs", 6))
+        constrained = bool(getattr(recipe, "constrained", True))
+        images = sorted(capture_folder(recipe).glob("*.jpg"))
+        ljson = label_folder(recipe)
+        for img in images:
+            tally["images"] += 1
+            sidecar = ljson / f"{img.stem}.json"
+            data = None
+            if sidecar.exists():
+                try:
+                    data = json.loads(sidecar.read_text(encoding="utf-8"))
+                except Exception:
+                    data = None
+            status = dataset_health.annotation_status(data, expected, constrained)
+            dataset_health.add_status(tally, status)
+        return tally
+
+    def show_dataset_health(self) -> None:
+        """Per-recipe / per-category dataset readiness dashboard."""
+        recipes = list_recipes()
+        if not recipes:
+            QMessageBox.information(self, "Dataset Health", "No saved recipes yet.")
+            return
+
+        # Group recipes by category, tally each, and accumulate category + grand totals.
+        rows: list[tuple[str, str, dict]] = []  # (category, recipe label, tally)
+        cat_totals: dict[str, dict] = {}
+        grand = dataset_health.new_tally()
+        for r in sorted(recipes, key=lambda x: (recipe_category(x), x.group, x.model)):
+            cat = recipe_category(r)
+            tally = self._recipe_health_tally(r)
+            rows.append((cat, f"{r.group} / {r.model}", tally))
+            cat_totals.setdefault(cat, dataset_health.new_tally())
+            dataset_health.merge_tally(cat_totals[cat], tally)
+            dataset_health.merge_tally(grand, tally)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Dataset Health")
+        dlg.resize(760, 480)
+        v = QVBoxLayout(dlg)
+        header = QLabel(
+            f"{len(recipes)} recipe(s) across {len(cat_totals)} categor(ies). "
+            f"Export-ready (reviewed OK + forced): {dataset_health.export_ready(grand)} "
+            f"of {grand['images']} images."
+        )
+        header.setWordWrap(True)
+        v.addWidget(header)
+
+        cols = ["Category", "Recipe", "Images", "Labeled", "Ready", "Forced",
+                "Problem", "Needs review", "Unlabeled", "Export-ready"]
+        table = QTableWidget(0, len(cols))
+        table.setHorizontalHeaderLabels(cols)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+
+        def add_row(cat: str, name: str, t: dict, *, emphasis: bool = False) -> None:
+            row = table.rowCount()
+            table.insertRow(row)
+            values = [
+                cat, name, t["images"], t["labeled"], t["ready"], t["forced"],
+                t["problem"], t["needs_review"], t["unlabeled"],
+                dataset_health.export_ready(t),
+            ]
+            for c, val in enumerate(values):
+                item = QTableWidgetItem(str(val))
+                if c >= 2:
+                    item.setTextAlignment(Qt.AlignCenter)
+                if emphasis:
+                    f = item.font(); f.setBold(True); item.setFont(f)
+                    item.setForeground(QColor("#bfdbfe"))
+                table.setItem(row, c, item)
+
+        last_cat = None
+        for cat, name, tally in rows:
+            if cat != last_cat:
+                add_row(cat, "— all in category —", cat_totals[cat], emphasis=True)
+                last_cat = cat
+            add_row("", name, tally)
+        add_row("TOTAL", "— all recipes —", grand, emphasis=True)
+
+        v.addWidget(table)
+        note = QLabel(
+            "Export-ready = reviewed-OK + force-reviewed images (what a reviewed-only "
+            "export includes). Problem/needs-review images are excluded until reviewed."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #94a3b8;")
+        v.addWidget(note)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dlg.reject)
+        buttons.accepted.connect(dlg.accept)
+        v.addWidget(buttons)
+        dlg.exec()
+
+    def show_shortcuts_reference(self) -> None:
+        """Cheat-sheet of keyboard shortcuts (the menu bar is hidden)."""
+        groups = [
+            ("Editing", [
+                ("Ctrl+Z / Ctrl+Y", "Undo / Redo"),
+                ("Delete", "Delete selected annotation"),
+                ("Shift+Delete", "Delete captured image"),
+                ("Arrows", "Nudge selected box (Shift = 10px)"),
+            ]),
+            ("File", [
+                ("Ctrl+O", "Open image"),
+                ("Ctrl+S", "Save labels"),
+            ]),
+            ("View", [
+                ("Ctrl + / Ctrl -", "Zoom in / out"),
+                ("Ctrl+0", "Fit image to window"),
+                ("Ctrl+F5", "Refresh recipe index"),
+                ("Mouse wheel", "Zoom; Middle/Alt-drag pans"),
+            ]),
+            ("Class", [
+                ("B", "Select battery class"),
+                ("U", "Select bung class"),
+                ("R", "Select retainer class"),
+            ]),
+            ("Navigate", [
+                ("N / P", "Next / Previous image"),
+                ("Ctrl+U", "Find next unreviewed"),
+                ("Ctrl+Shift+R", "Mark current reviewed"),
+                ("Ctrl+Shift+F", "Force review current"),
+            ]),
+            ("Tools", [
+                ("Ctrl+L", "Auto-label current (model)"),
+                ("Ctrl+Shift+V", "Validate current image"),
+                ("Ctrl+Shift+N", "Next in review queue"),
+                ("C", "Capture adjusted frame"),
+                ("F1", "Show this shortcut reference"),
+            ]),
+        ]
+        lines = ["<table cellpadding='4'>"]
+        for title, items in groups:
+            lines.append(f"<tr><td colspan='2' style='padding-top:8px'><b style='color:#bfdbfe'>{title}</b></td></tr>")
+            for keys, desc in items:
+                lines.append(
+                    f"<tr><td style='color:#fbbf24'><code>{keys}</code></td>"
+                    f"<td>{desc}</td></tr>"
+                )
+        lines.append("</table>")
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Keyboard Shortcuts")
+        dlg.resize(460, 560)
+        v = QVBoxLayout(dlg)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setHtml("".join(lines))
+        v.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dlg.reject)
+        buttons.accepted.connect(dlg.accept)
+        v.addWidget(buttons)
+        dlg.exec()
 
 
     def _current_image_index(self) -> int:

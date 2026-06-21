@@ -75,6 +75,46 @@ def test_build_command_custom_exe_and_resume(tmp_path):
     assert "resume=True" in cmd
 
 
+_RESULTS_CSV = (
+    "epoch,train/box_loss,train/cls_loss,metrics/mAP50(B),metrics/mAP50-95(B)\n"
+    "1,1.5,2.0,0.10,0.05\n"
+    "2,1.2,1.7,0.30,0.15\n"
+    "3,1.0,1.5,0.55,0.32\n"
+)
+
+
+def test_parse_results_csv():
+    rows = t.parse_results_csv(_RESULTS_CSV)
+    assert len(rows) == 3
+    assert rows[0]["epoch"] == 1.0
+    assert rows[2]["train/box_loss"] == 1.0
+
+
+def test_parse_results_csv_skips_malformed():
+    bad = _RESULTS_CSV + "4,oops\n"
+    rows = t.parse_results_csv(bad)
+    assert len(rows) == 3
+
+
+def test_parse_results_csv_empty():
+    assert t.parse_results_csv("") == []
+    assert t.parse_results_csv("epoch,train/box_loss\n") == []
+
+
+def test_metric_series_by_substring():
+    rows = t.parse_results_csv(_RESULTS_CSV)
+    assert t.metric_series(rows, "box_loss") == [1.5, 1.2, 1.0]
+    assert t.metric_series(rows, "mAP50-95") == [0.05, 0.15, 0.32]
+    assert t.metric_series(rows, "nonexistent") == []
+
+
+def test_chart_series_present_only():
+    rows = t.parse_results_csv(_RESULTS_CSV)
+    series = t.chart_series(rows)
+    assert set(series) == {"box_loss", "cls_loss", "mAP50", "mAP50-95"}
+    assert series["mAP50"] == [0.10, 0.30, 0.55]
+
+
 if __name__ == "__main__":
     import tempfile
     import traceback
