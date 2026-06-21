@@ -1,7 +1,0 @@
-BungVision Label Studio v0.9.38 - Custom Class OBB Defaults
-
-- New custom classes now default to OBB / 4-corner instead of Box fallback.
-- Added Default tool selector in Custom Classes.
-- Added Apply Tool to Selected Class for changing existing class defaults.
-- Migrates old auto-BOX custom classes to OBB while preserving deliberate v0.9.38+ Box fallback selections.
-- Preserves v0.9.37 single-model class filtering and review safety fixes.
