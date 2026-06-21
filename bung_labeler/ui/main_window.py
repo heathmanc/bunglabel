@@ -60,7 +60,10 @@ from bung_labeler.core.storage import (
     label_folder,
     image_label_json_path,
     list_recipes,
+    list_categories,
+    recipe_category,
     recipe_path,
+    DEFAULT_CATEGORY,
     load_annotations,
     save_annotations,
     save_capture,
@@ -892,6 +895,14 @@ class MainWindow(QMainWindow):
 
         form_box = QGroupBox("Grouped Recipe")
         form = QFormLayout(form_box)
+        self.category_combo = QComboBox()
+        self.category_combo.setEditable(True)
+        self.category_combo.setMaximumWidth(180)
+        self.category_combo.setToolTip(
+            "Broad equipment category. Pick an existing one or type a new name to "
+            "group this recipe under a piece of equipment."
+        )
+        self._reload_category_combo(recipe_category(self.recipe))
         self.group_edit = QLineEdit(self.recipe.group)
         self.group_edit.setMaximumWidth(180)
         self.group_edit.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -915,6 +926,7 @@ class MainWindow(QMainWindow):
         self.notes_edit = QTextEdit()
         self.notes_edit.setFixedHeight(54)
         self.notes_edit.setPlaceholderText("Notes, lighting setup, lens height, battery family, etc.")
+        form.addRow("Category", self.category_combo)
         form.addRow("Group", self.group_edit)
         form.addRow("Model", self.model_edit)
         form.addRow("Expected bungs", self.expected_spin)
@@ -933,11 +945,21 @@ class MainWindow(QMainWindow):
         recipe_btn_row.addWidget(load_btn)
         recipe_btn_row.addWidget(delete_recipe_btn)
 
+        # Browse/filter the recipe list by category.
+        self.recipe_filter_combo = QComboBox()
+        self.recipe_filter_combo.setToolTip("Show only recipes in the chosen category.")
+        self.recipe_filter_combo.currentIndexChanged.connect(lambda _i: self._refresh_recipes())
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Show category"))
+        filter_row.addWidget(self.recipe_filter_combo, 1)
+
         layout.addWidget(form_box)
         layout.addWidget(save_btn)
         layout.addLayout(recipe_btn_row)
-        layout.addWidget(QLabel("Recipes"))
+        layout.addLayout(filter_row)
         layout.addWidget(self.recipe_list)
+        self._reload_recipe_filter_combo()
+        self._refresh_recipes()
         return w
 
     def _capture_tab(self) -> QWidget:
@@ -1949,10 +1971,43 @@ class MainWindow(QMainWindow):
         if hasattr(self, "count_required_spin"):
             self._set_int_line_value(self.count_required_spin, self._count_required_value())
 
+    def _category_from_ui(self) -> str:
+        if hasattr(self, "category_combo"):
+            cat = self.category_combo.currentText().strip()
+            return cat or DEFAULT_CATEGORY
+        return DEFAULT_CATEGORY
+
+    def _reload_category_combo(self, select: str | None = None) -> None:
+        """Repopulate the recipe category editor with known categories."""
+        if not hasattr(self, "category_combo"):
+            return
+        target = select if select is not None else self.category_combo.currentText().strip()
+        target = target or DEFAULT_CATEGORY
+        self.category_combo.blockSignals(True)
+        self.category_combo.clear()
+        self.category_combo.addItems(list_categories())
+        self.category_combo.setCurrentText(target)
+        self.category_combo.blockSignals(False)
+
+    def _reload_recipe_filter_combo(self) -> None:
+        """Repopulate the browse-by-category filter, preserving the selection."""
+        if not hasattr(self, "recipe_filter_combo"):
+            return
+        current = self.recipe_filter_combo.currentText()
+        self.recipe_filter_combo.blockSignals(True)
+        self.recipe_filter_combo.clear()
+        self.recipe_filter_combo.addItem("All categories", None)
+        for cat in list_categories():
+            self.recipe_filter_combo.addItem(cat, cat)
+        idx = self.recipe_filter_combo.findText(current) if current else 0
+        self.recipe_filter_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.recipe_filter_combo.blockSignals(False)
+
     def _current_recipe_from_ui(self) -> Recipe:
         return Recipe(
             group=self.group_edit.text().strip() or "Default",
             model=self.model_edit.text().strip() or "Battery_Model",
+            category=self._category_from_ui(),
             expected_bungs=self._expected_bungs_value(),
             constrained=self.constrained_check.isChecked() if hasattr(self, "constrained_check") else True,
             brightness=self.brightness_slider.value(),
@@ -1970,6 +2025,9 @@ class MainWindow(QMainWindow):
         old_expected = getattr(self.recipe, "expected_bungs", None)
         self.recipe = self._current_recipe_from_ui()
         path = save_recipe(self.recipe)
+        # A new category may have been typed; surface it in both pickers.
+        self._reload_category_combo(recipe_category(self.recipe))
+        self._reload_recipe_filter_combo()
         self._refresh_recipes()
         if old_safe != self.recipe.safe_name:
             self._reset_recipe_image_index()
@@ -1981,61 +2039,84 @@ class MainWindow(QMainWindow):
         self._update_camera_settings_summary()
         self._update_box_count()
 
+    def _selected_recipe_filter(self) -> str | None:
+        """Category chosen in the browse filter, or None for all categories."""
+        if not hasattr(self, "recipe_filter_combo"):
+            return None
+        return self.recipe_filter_combo.currentData()
+
     def _refresh_recipes(self) -> None:
         self.recipe_list.clear()
+        wanted = self._selected_recipe_filter()
+        show_all = wanted is None
         for r in list_recipes():
-            self.recipe_list.addItem(f"{r.group} / {r.model}")
+            cat = recipe_category(r)
+            if not show_all and cat != wanted:
+                continue
+            label = f"[{cat}]  {r.group} / {r.model}" if show_all else f"{r.group} / {r.model}"
+            item = QListWidgetItem(label)
+            # safe_name uniquely identifies the recipe across categories.
+            item.setData(Qt.ItemDataRole.UserRole, r.safe_name)
+            self.recipe_list.addItem(item)
+
+    def _recipe_for_selected_item(self) -> Recipe | None:
+        item = self.recipe_list.currentItem()
+        if not item:
+            return None
+        safe = item.data(Qt.ItemDataRole.UserRole)
+        for r in list_recipes():
+            if r.safe_name == safe:
+                return r
+        return None
 
     def _load_selected_recipe(self) -> None:
-        item = self.recipe_list.currentItem()
-        if not item:
+        r = self._recipe_for_selected_item()
+        if r is None:
             return
-        text = item.text()
-        group, model = [x.strip() for x in text.split("/", 1)]
-        for r in list_recipes():
-            if r.group == group and r.model == model:
-                self.recipe = r
-                self.group_edit.setText(r.group)
-                self.model_edit.setText(r.model)
-                if hasattr(self, "constrained_check"):
-                    self.constrained_check.setChecked(bool(getattr(r, "constrained", True)))
-                self._set_int_line_value(self.expected_spin, r.expected_bungs)
-                if hasattr(self, "count_required_spin"):
-                    self._set_int_line_value(self.count_required_spin, r.expected_bungs)
-                self.brightness_slider.setValue(r.brightness)
-                self.contrast_slider.setValue(r.contrast)
-                self.gamma_slider.setValue(int(r.gamma * 100))
-                self.clahe_check.setChecked(r.clahe_enabled)
-                self.clahe_clip_slider.setValue(int(r.clahe_clip * 10))
-                self.clahe_grid_slider.setValue(r.clahe_grid)
-                self.sharpen_slider.setValue(r.sharpen)
-                self.notes_edit.setText(r.notes)
-                self._reset_recipe_image_index()
-                self._refresh_images()
-                self._update_box_count()
-                self.status.showMessage(f"Loaded recipe: {r.group} / {r.model}", 5000)
-                return
+        self.recipe = r
+        if hasattr(self, "category_combo"):
+            self._reload_category_combo(recipe_category(r))
+        self.group_edit.setText(r.group)
+        self.model_edit.setText(r.model)
+        if hasattr(self, "constrained_check"):
+            self.constrained_check.setChecked(bool(getattr(r, "constrained", True)))
+        self._set_int_line_value(self.expected_spin, r.expected_bungs)
+        if hasattr(self, "count_required_spin"):
+            self._set_int_line_value(self.count_required_spin, r.expected_bungs)
+        self.brightness_slider.setValue(r.brightness)
+        self.contrast_slider.setValue(r.contrast)
+        self.gamma_slider.setValue(int(r.gamma * 100))
+        self.clahe_check.setChecked(r.clahe_enabled)
+        self.clahe_clip_slider.setValue(int(r.clahe_clip * 10))
+        self.clahe_grid_slider.setValue(r.clahe_grid)
+        self.sharpen_slider.setValue(r.sharpen)
+        self.notes_edit.setText(r.notes)
+        self._reset_recipe_image_index()
+        self._refresh_images()
+        self._update_box_count()
+        self.status.showMessage(f"Loaded recipe: [{recipe_category(r)}] {r.group} / {r.model}", 5000)
 
     def delete_selected_recipe(self) -> None:
-        item = self.recipe_list.currentItem()
-        if not item:
+        r = self._recipe_for_selected_item()
+        if r is None:
             QMessageBox.information(self, "Delete Recipe", "Select a recipe in the list first.")
             return
-        text = item.text()
-        group, model = [x.strip() for x in text.split("/", 1)]
+        cat = recipe_category(r)
         reply = QMessageBox.question(
             self, "Delete Recipe",
-            f"Delete recipe '{group} / {model}'?\n\n"
+            f"Delete recipe '[{cat}] {r.group} / {r.model}'?\n\n"
             "The recipe definition file will be deleted. Captured images and labels are NOT deleted.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
-        path = recipe_path(group, model)
+        path = recipe_path(r.group, r.model, cat)
         if path.exists():
             path.unlink()
+        self._reload_category_combo()
+        self._reload_recipe_filter_combo()
         self._refresh_recipes()
-        self.status.showMessage(f"Deleted recipe: {group} / {model}", 5000)
+        self.status.showMessage(f"Deleted recipe: [{cat}] {r.group} / {r.model}", 5000)
 
     def _review_record(self, reason: str = "operator_review", *, force: bool = False, counts: tuple[int, int] | None = None) -> dict:
         counts = counts if counts is not None else self._current_label_counts()
