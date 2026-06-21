@@ -474,6 +474,11 @@ class MainWindow(QMainWindow):
 
         tools_menu.addSeparator()
 
+        prelabel_action = QAction("Pre-label unlabeled && review (model)", self)
+        prelabel_action.setShortcut("Ctrl+Shift+P")
+        prelabel_action.triggered.connect(self.prelabel_and_review)
+        tools_menu.addAction(prelabel_action)
+
         build_queue_action = QAction("Build review queue (model)", self)
         build_queue_action.triggered.connect(self.build_review_queue)
         tools_menu.addAction(build_queue_action)
@@ -505,7 +510,7 @@ class MainWindow(QMainWindow):
             next_action, prev_action,
             unreviewed_action, mark_reviewed_action, force_review_action,
             capture_action, auto_label_action, validate_action,
-            next_queue_action, shortcuts_action,
+            prelabel_action, next_queue_action, shortcuts_action,
         ):
             self.addAction(action)
 
@@ -666,11 +671,14 @@ class MainWindow(QMainWindow):
         auto_label_btn = QPushButton("Auto-label Current")
         auto_label_btn.setToolTip("Pre-label the current image with this model. Predictions become editable labels you correct and save. Undo with Ctrl+Z.")
         auto_label_btn.clicked.connect(self.auto_label_current)
+        prelabel_btn = QPushButton("Pre-label && Review All")
+        prelabel_btn.setToolTip("Run the model on every unlabeled image, save the predictions as un-reviewed labels, and open them in the review queue lowest-confidence first. Existing labels are untouched. (Ctrl+Shift+P)")
+        prelabel_btn.clicked.connect(self.prelabel_and_review)
 
         run_grid = QGridLayout()
         run_grid.setHorizontalSpacing(8)
         run_grid.setVerticalSpacing(8)
-        test_buttons = (run_btn, count_btn, clear_btn, show_labels_btn, auto_label_btn)
+        test_buttons = (run_btn, count_btn, clear_btn, show_labels_btn, auto_label_btn, prelabel_btn)
         for i, btn in enumerate(test_buttons):
             btn.setMinimumHeight(32)
             btn.setMinimumWidth(0)
@@ -3310,6 +3318,100 @@ class MainWindow(QMainWindow):
         )
         self.next_in_review_queue()
 
+    def prelabel_and_review(self) -> None:
+        """Smart pre-labeling loop.
+
+        Runs the trained model across every *unlabeled* image in the recipe,
+        writes the predictions to disk as un-reviewed labels (so they appear as
+        "needs review" and are excluded from training/export until confirmed),
+        then drops the operator into the review queue ordered lowest-confidence
+        first. Each queued image opens with the model's boxes already loaded, so
+        labeling becomes correcting rather than drawing from scratch.
+        """
+        model_path = self.test_model_edit.text().strip() if hasattr(self, "test_model_edit") else ""
+        if not model_path:
+            QMessageBox.information(
+                self, "Pre-label & review",
+                "Set a trained OBB model in the Model Test tab first, then pre-label.",
+            )
+            return
+
+        todo = [
+            p for p in self._get_recipe_image_paths()
+            if self._cached_image_status(p).get("status") == "unlabeled"
+        ]
+        if not todo:
+            QMessageBox.information(
+                self, "Pre-label & review",
+                "No unlabeled images in this recipe. Pre-labeling only writes to images "
+                "that have no saved labels yet, so it never overwrites your work.",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self, "Pre-label & review",
+            f"Run the model on {len(todo)} unlabeled image(s), save the predictions as "
+            "un-reviewed labels, and open them in the review queue (lowest confidence "
+            "first)?\n\nExisting labeled images are left untouched.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
+        scored = []
+        written = 0
+        empty = 0
+        errors = 0
+        for i, p in enumerate(todo):
+            self.status.showMessage(f"Pre-labeling {i + 1}/{len(todo)}: {p.name}", 1000)
+            QApplication.processEvents()
+            try:
+                frame, results, _t0, _t1 = self._run_test_model_on_image(p)
+            except Exception:
+                errors += 1
+                # A model failure on an image is itself a reason to look at it.
+                scored.append(active_learning.QueueItem(str(p), active_learning.NO_BATTERY_PENALTY))
+                continue
+
+            battery_items, battery_count, _ = self._battery_obb_overlay_items(results)
+            if battery_count == 0:
+                battery_items, battery_count, _ = self._battery_box_overlay_items(results)
+            bung_items, _bung_count = self._bung_overlay_items(results)
+            box_dicts = self._overlay_items_to_box_dicts(battery_items + bung_items)
+
+            if box_dicts:
+                h, w = frame.shape[:2]
+                # review=None + clear_review=False => saved but not reviewed,
+                # so the image shows as "needs review" until the operator confirms.
+                save_annotations(p, int(w), int(h), box_dicts, self.class_names, review=None)
+                self._invalidate_image_status(p)
+                written += 1
+            else:
+                empty += 1
+
+            bc, per, outside, avg_conf = self._detection_disagreement(results)
+            score = active_learning.disagreement_score(bc, per, outside, int(expected), avg_conf)
+            scored.append(active_learning.QueueItem(str(p), score))
+
+        ranked = active_learning.rank_items(scored)
+        self._review_queue = [Path(it.key) for it in ranked]
+        self._review_queue_pos = -1
+
+        self._update_dataset_summary()
+        self._refresh_images()
+
+        msg = (
+            f"Pre-labeled {written} image(s) with model predictions"
+            + (f", {empty} had no detections" if empty else "")
+            + (f", {errors} failed" if errors else "")
+            + ".\n\nQueued "
+            f"{len(ranked)} image(s), lowest confidence first. Correct each, then Save "
+            "(or Mark reviewed). Use Next in review queue (Ctrl+Shift+N) to advance."
+        )
+        QMessageBox.information(self, "Pre-label & review", msg)
+        self.next_in_review_queue()
+
     def next_in_review_queue(self) -> None:
         if not self._review_queue:
             QMessageBox.information(
@@ -4567,6 +4669,7 @@ class MainWindow(QMainWindow):
             ]),
             ("Tools", [
                 ("Ctrl+L", "Auto-label current (model)"),
+                ("Ctrl+Shift+P", "Pre-label unlabeled && review (model)"),
                 ("Ctrl+Shift+V", "Validate current image"),
                 ("Ctrl+Shift+N", "Next in review queue"),
                 ("C", "Capture adjusted frame"),
