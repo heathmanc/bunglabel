@@ -60,6 +60,7 @@ from bung_labeler.core.storage import (
     label_folder,
     image_label_json_path,
     list_recipes,
+    recipe_path,
     load_annotations,
     save_annotations,
     save_capture,
@@ -923,12 +924,18 @@ class MainWindow(QMainWindow):
 
         save_btn = QPushButton("Save Recipe")
         save_btn.clicked.connect(self.save_recipe_from_ui)
-        load_btn = QPushButton("Load Selected Recipe")
+        load_btn = QPushButton("Load Selected")
         load_btn.clicked.connect(self._load_selected_recipe)
+        delete_recipe_btn = QPushButton("Delete Selected")
+        delete_recipe_btn.setToolTip("Permanently delete the selected recipe file. Captured images and labels are NOT deleted.")
+        delete_recipe_btn.clicked.connect(self.delete_selected_recipe)
+        recipe_btn_row = QHBoxLayout()
+        recipe_btn_row.addWidget(load_btn)
+        recipe_btn_row.addWidget(delete_recipe_btn)
 
         layout.addWidget(form_box)
         layout.addWidget(save_btn)
-        layout.addWidget(load_btn)
+        layout.addLayout(recipe_btn_row)
         layout.addWidget(QLabel("Recipes"))
         layout.addWidget(self.recipe_list)
         return w
@@ -1313,8 +1320,9 @@ class MainWindow(QMainWindow):
         cv = QVBoxLayout(class_box)
         cv.setContentsMargins(8, 8, 8, 8)
         cv.setSpacing(4)
-        self.class_list_label = QLabel()
-        self.class_list_label.setWordWrap(True)
+        self.class_list_widget = QListWidget()
+        self.class_list_widget.setMaximumHeight(120)
+        self.class_list_widget.setToolTip("Select a class and click Remove to delete it.")
         self.new_class_edit = QLineEdit()
         self.new_class_edit.setPlaceholderText("battery, bung, retainer, terminal, label...")
         self.new_class_tool_combo = QComboBox()
@@ -1322,25 +1330,32 @@ class MainWindow(QMainWindow):
         self.new_class_tool_combo.addItem("Box fallback", "BOX")
         self.new_class_tool_combo.setCurrentIndex(0)
         self.new_class_tool_combo.setToolTip("Default annotation tool for the new class. OBB is the normal BungVision training workflow; Box is only for compatibility/fallback labels.")
-        add_class_btn = QPushButton("Add Custom Class")
+        add_class_btn = QPushButton("Add Class")
         add_class_btn.clicked.connect(self.add_custom_class)
-        apply_tool_btn = QPushButton("Apply Tool to Selected Class")
-        apply_tool_btn.setToolTip("Change the default tool for the class currently selected in the Annotation Class dropdown.")
+        remove_class_btn = QPushButton("Remove Selected")
+        remove_class_btn.setToolTip("Remove the selected class from the config (does not delete existing labels).")
+        remove_class_btn.clicked.connect(self.remove_selected_class)
+        apply_tool_btn = QPushButton("Apply Tool to Selected")
+        apply_tool_btn.setToolTip("Change the default tool for the selected class in the list.")
         apply_tool_btn.clicked.connect(self.apply_selected_class_tool_default)
-        for btn in (add_class_btn, apply_tool_btn):
+        for btn in (add_class_btn, remove_class_btn, apply_tool_btn):
             btn.setProperty("rightPanelButton", True)
             btn.setMinimumHeight(24)
             btn.setMaximumHeight(26)
             btn.setMinimumWidth(0)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        cv.addWidget(self.class_list_label)
-        cv.addWidget(QLabel("New class"))
+        class_btn_row = QHBoxLayout()
+        class_btn_row.setSpacing(4)
+        class_btn_row.addWidget(add_class_btn)
+        class_btn_row.addWidget(remove_class_btn)
+        cv.addWidget(self.class_list_widget)
+        cv.addWidget(QLabel("New class name"))
         cv.addWidget(self.new_class_edit)
         cv.addWidget(QLabel("Default tool"))
         cv.addWidget(self.new_class_tool_combo)
-        cv.addWidget(add_class_btn)
+        cv.addLayout(class_btn_row)
         cv.addWidget(apply_tool_btn)
-        self._refresh_class_list_label()
+        self._refresh_class_list_widget()
 
         export_box = QGroupBox("Export")
         ev = QVBoxLayout(export_box)
@@ -1444,18 +1459,18 @@ class MainWindow(QMainWindow):
         self._class_changed(self.class_combo.currentIndex())
         self._refresh_class_list_label()
 
-    def _refresh_class_list_label(self) -> None:
-        if not hasattr(self, "class_list_label"):
+    def _refresh_class_list_widget(self) -> None:
+        if not hasattr(self, "class_list_widget"):
             return
-        rows = []
+        self.class_list_widget.clear()
         for c in sorted(self.class_config, key=lambda x: int(x.get("id", 0))):
             if not c.get("enabled", True):
                 continue
             role = str(c.get("role", "custom"))
-            tool = str(c.get("default_tool", "OBB")).upper()
-            tool = "BOX" if tool == "BOX" else "OBB"
-            rows.append(f"{int(c.get('id', 0))}: {c.get('name')} ({role}, {tool})")
-        self.class_list_label.setText("\n".join(rows))
+            tool = "BOX" if str(c.get("default_tool", "OBB")).upper() == "BOX" else "OBB"
+            item = QListWidgetItem(f"{int(c.get('id', 0))}: {c.get('name')} ({role}, {tool})")
+            item.setData(Qt.ItemDataRole.UserRole, int(c.get("id", 0)))
+            self.class_list_widget.addItem(item)
 
     def _add_class_record(self, name: str, role: str, layout: str = "none", default_tool: str = "OBB") -> bool:
         safe = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in name).strip("_") or "custom"
@@ -1475,6 +1490,7 @@ class MainWindow(QMainWindow):
         })
         save_class_config(self.class_config)
         self._refresh_class_combo()
+        self._refresh_class_list_widget()
         try:
             idx = self.class_names.index(safe)
             self.class_combo.setCurrentIndex(idx)
@@ -1484,11 +1500,13 @@ class MainWindow(QMainWindow):
         return True
 
     def apply_selected_class_tool_default(self) -> None:
-        if not hasattr(self, "class_combo") or not hasattr(self, "new_class_tool_combo"):
+        if not hasattr(self, "class_list_widget") or not hasattr(self, "new_class_tool_combo"):
             return
-        class_id = int(self.class_combo.currentIndex())
-        if class_id < 0:
+        item = self.class_list_widget.currentItem()
+        if item is None:
+            QMessageBox.information(self, "Class Tool", "Select a class in the list first.")
             return
+        class_id = int(item.data(Qt.ItemDataRole.UserRole))
         tool = "BOX" if str(self.new_class_tool_combo.currentData()).upper() == "BOX" else "OBB"
         changed = False
         for c in self.class_config:
@@ -1502,8 +1520,37 @@ class MainWindow(QMainWindow):
             return
         save_class_config(self.class_config)
         self._refresh_class_combo()
-        self.class_combo.setCurrentIndex(class_id)
+        self._refresh_class_list_widget()
         self.status.showMessage(f"Set class {class_id} default tool to {tool}", 5000)
+
+    def remove_selected_class(self) -> None:
+        if not hasattr(self, "class_list_widget"):
+            return
+        item = self.class_list_widget.currentItem()
+        if item is None:
+            QMessageBox.information(self, "Remove Class", "Select a class in the list first.")
+            return
+        class_id = int(item.data(Qt.ItemDataRole.UserRole))
+        name = ""
+        for c in self.class_config:
+            if int(c.get("id", -1)) == class_id:
+                name = str(c.get("name", ""))
+                break
+        reply = QMessageBox.question(
+            self, "Remove Class",
+            f"Remove class '{name}' (id {class_id}) from the configuration?\n\n"
+            "Existing labels in saved sidecar files are NOT deleted — they will just\n"
+            "map to 'unknown' until you re-add a matching class or relabel them.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.class_config = [c for c in self.class_config if int(c.get("id", -1)) != class_id]
+        save_class_config(self.class_config)
+        self.class_names = class_names_from_config(self.class_config)
+        self._refresh_class_combo()
+        self._refresh_class_list_widget()
+        self.status.showMessage(f"Removed class {class_id}: {name}", 5000)
 
     def add_custom_class(self) -> None:
         name = self.new_class_edit.text().strip() if hasattr(self, "new_class_edit") else ""
@@ -1968,6 +2015,27 @@ class MainWindow(QMainWindow):
                 self._update_box_count()
                 self.status.showMessage(f"Loaded recipe: {r.group} / {r.model}", 5000)
                 return
+
+    def delete_selected_recipe(self) -> None:
+        item = self.recipe_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "Delete Recipe", "Select a recipe in the list first.")
+            return
+        text = item.text()
+        group, model = [x.strip() for x in text.split("/", 1)]
+        reply = QMessageBox.question(
+            self, "Delete Recipe",
+            f"Delete recipe '{group} / {model}'?\n\n"
+            "The recipe definition file will be deleted. Captured images and labels are NOT deleted.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        path = recipe_path(group, model)
+        if path.exists():
+            path.unlink()
+        self._refresh_recipes()
+        self.status.showMessage(f"Deleted recipe: {group} / {model}", 5000)
 
     def _review_record(self, reason: str = "operator_review", *, force: bool = False, counts: tuple[int, int] | None = None) -> dict:
         counts = counts if counts is not None else self._current_label_counts()
