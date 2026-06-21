@@ -55,6 +55,7 @@ from bung_labeler.core.storage import (
     EXPORT_DIR,
     Recipe,
     capture_folder,
+    label_folder,
     image_label_json_path,
     list_recipes,
     load_annotations,
@@ -72,6 +73,8 @@ from bung_labeler.core.yolo_export import export_recipe_yolo, export_all_recipes
 from bung_labeler.core import review as review_logic
 from bung_labeler.core import geometry as geom
 from bung_labeler.core import export_report
+from bung_labeler.core import relabel as relabel_logic
+from bung_labeler.core import active_learning
 from bung_labeler.version import APP_TITLE
 from bung_labeler.ui.canvas import ImageCanvas
 
@@ -97,6 +100,9 @@ class MainWindow(QMainWindow):
         self.last_raw = None
         self.last_adjusted = None
         self.current_image_path: Path | None = None
+        # Active-learning review queue (model-prioritized unreviewed images).
+        self._review_queue: list[Path] = []
+        self._review_queue_pos = -1
         self.camera_settings = load_camera_settings()
         self.class_config = load_class_config()
         self.class_names = class_names_from_config(self.class_config)
@@ -261,6 +267,21 @@ class MainWindow(QMainWindow):
         validate_action.setShortcut("Ctrl+Shift+V")
         validate_action.triggered.connect(self.validate_current_image)
         tools_menu.addAction(validate_action)
+
+        relabel_action = QAction("Bulk relabel class...", self)
+        relabel_action.triggered.connect(self.bulk_relabel_dialog)
+        tools_menu.addAction(relabel_action)
+
+        tools_menu.addSeparator()
+
+        build_queue_action = QAction("Build review queue (model)", self)
+        build_queue_action.triggered.connect(self.build_review_queue)
+        tools_menu.addAction(build_queue_action)
+
+        next_queue_action = QAction("Next in review queue", self)
+        next_queue_action.setShortcut("Ctrl+Shift+N")
+        next_queue_action.triggered.connect(self.next_in_review_queue)
+        tools_menu.addAction(next_queue_action)
 
     def _scroll_panel(self, widget: QWidget, min_width: int, preferred_width: int) -> QScrollArea:
         scroll = QScrollArea()
@@ -2189,6 +2210,122 @@ class MainWindow(QMainWindow):
             8000,
         )
 
+    def _detection_disagreement(self, results):
+        """Summarize a model result for active-learning scoring.
+
+        Returns (battery_count, per_battery_bung_counts, outside, avg_conf).
+        Reuses the model-test overlay builders and the same bung-center
+        containment used by the count test.
+        """
+        battery_items, battery_count, _ = self._battery_obb_overlay_items(results)
+        if battery_count == 0:
+            battery_items, battery_count, _ = self._battery_box_overlay_items(results)
+        bung_items, _ = self._bung_overlay_items(results)
+
+        batteries = []
+        for it in battery_items:
+            poly = it.get("points", [])
+            if not poly and "xyxy" in it:
+                x1, y1, x2, y2 = [float(v) for v in it.get("xyxy", [0, 0, 0, 0])]
+                poly = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+            batteries.append(poly)
+
+        per = [0] * len(batteries)
+        outside = 0
+        confs = []
+        for it in bung_items:
+            if it.get("conf") is not None:
+                confs.append(float(it.get("conf")))
+            cx = float(it.get("cx", 0)); cy = float(it.get("cy", 0))
+            assigned = False
+            for i, poly in enumerate(batteries):
+                if self._point_inside_polygon(cx, cy, poly):
+                    per[i] += 1
+                    assigned = True
+                    break
+            if not assigned:
+                outside += 1
+        avg_conf = sum(confs) / len(confs) if confs else None
+        return battery_count, per, outside, avg_conf
+
+    def build_review_queue(self) -> None:
+        """Run the model across unreviewed images and order them by how much the
+        detections disagree with the recipe, so the most informative images are
+        labeled first."""
+        model_path = self.test_model_edit.text().strip() if hasattr(self, "test_model_edit") else ""
+        if not model_path:
+            QMessageBox.information(
+                self, "Review queue",
+                "Set a trained OBB model in the Model Test tab first, then build the queue.",
+            )
+            return
+
+        todo = []
+        for p in self._get_recipe_image_paths():
+            entry = self._cached_image_status(p)
+            if entry.get("status") not in ("ready", "forced"):
+                todo.append(p)
+        if not todo:
+            QMessageBox.information(self, "Review queue", "No unreviewed images to prioritize in this recipe.")
+            return
+        if len(todo) > 200:
+            reply = QMessageBox.question(
+                self, "Review queue",
+                f"Run the model on {len(todo)} unreviewed images? This may take a while.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        expected = self._expected_bungs_value() if hasattr(self, "expected_spin") else self.recipe.expected_bungs
+        scored = []
+        for i, p in enumerate(todo):
+            self.status.showMessage(f"Scoring {i + 1}/{len(todo)}: {p.name}", 1000)
+            QApplication.processEvents()
+            try:
+                _frame, results, _t0, _t1 = self._run_test_model_on_image(p)
+            except Exception:
+                # A model failure on an image is itself a reason to look at it.
+                scored.append(active_learning.QueueItem(str(p), active_learning.NO_BATTERY_PENALTY))
+                continue
+            bc, per, outside, avg_conf = self._detection_disagreement(results)
+            score = active_learning.disagreement_score(bc, per, outside, int(expected), avg_conf)
+            scored.append(active_learning.QueueItem(str(p), score))
+
+        ranked = active_learning.rank_items(scored)
+        self._review_queue = [Path(it.key) for it in ranked]
+        self._review_queue_pos = -1
+
+        top = ranked[: min(5, len(ranked))]
+        lines = [f"{Path(it.key).name}: score {it.score:.1f}" for it in top]
+        QMessageBox.information(
+            self, "Review queue",
+            f"Prioritized {len(ranked)} unreviewed image(s), highest disagreement first:\n\n"
+            + "\n".join(lines)
+            + "\n\nUse Tools > Next in review queue (Ctrl+Shift+N) to step through them.",
+        )
+        self.next_in_review_queue()
+
+    def next_in_review_queue(self) -> None:
+        if not self._review_queue:
+            QMessageBox.information(
+                self, "Review queue",
+                "Build the review queue first (Tools > Build review queue).",
+            )
+            return
+        # Advance past any images that have since been deleted.
+        while self._review_queue_pos + 1 < len(self._review_queue):
+            self._review_queue_pos += 1
+            path = self._review_queue[self._review_queue_pos]
+            if path.exists():
+                self._load_image_path(path)
+                self.status.showMessage(
+                    f"Review queue {self._review_queue_pos + 1}/{len(self._review_queue)}: {path.name}",
+                    6000,
+                )
+                return
+        self.status.showMessage("End of review queue.", 5000)
+
     def validate_current_image(self) -> None:
         """Run label-quality linting on the on-canvas boxes and report issues."""
         boxes = [b.to_dict() for b in self.canvas.boxes]
@@ -2205,6 +2342,108 @@ class MainWindow(QMainWindow):
                 f"Found {len(issues)} issue(s):\n\n" + "\n".join(f"• {s}" for s in issues),
             )
         self.status.showMessage(f"Validation: {len(issues)} issue(s)", 6000)
+
+    def bulk_relabel_dialog(self) -> None:
+        """Rename/renumber a class across every saved label in the current recipe.
+
+        Operates on the on-disk sidecars, previews the impact first, and clears
+        the review marker on changed images so they re-enter the review queue.
+        """
+        names = [str(n) for n in (self.class_names or [])]
+        if len(names) < 2:
+            QMessageBox.information(self, "Bulk relabel", "Define at least two classes before relabeling.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Bulk relabel class (current recipe)")
+        dlg.setMinimumWidth(420)
+        layout = QVBoxLayout(dlg)
+
+        info = QLabel(
+            f"Recipe: {self.recipe.safe_name}\n"
+            "Reassign every box of one class to another across this recipe's saved labels.\n"
+            "Changed images are returned to the review queue."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        form = QFormLayout()
+        source_combo = QComboBox(); source_combo.addItems(names)
+        target_combo = QComboBox(); target_combo.addItems(names)
+        if len(names) > 1:
+            target_combo.setCurrentIndex(1)
+        form.addRow("From class", source_combo)
+        form.addRow("To class", target_combo)
+        layout.addLayout(form)
+
+        preview_label = QLabel("Click Preview to count affected labels.")
+        preview_label.setWordWrap(True)
+        layout.addWidget(preview_label)
+
+        btn_row = QHBoxLayout()
+        preview_btn = QPushButton("Preview")
+        apply_btn = QPushButton("Apply")
+        cancel_btn = QPushButton("Cancel")
+        apply_btn.setEnabled(False)
+        btn_row.addWidget(preview_btn); btn_row.addWidget(apply_btn); btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        ldir = label_folder(self.recipe)
+
+        def do_preview() -> None:
+            src = source_combo.currentText()
+            tgt = target_combo.currentText()
+            if src == tgt:
+                preview_label.setText("Source and target classes are the same; nothing to do.")
+                apply_btn.setEnabled(False)
+                return
+            report = relabel_logic.scan_relabel(
+                ldir, match_label=src, new_label=tgt, new_class_id=names.index(tgt)
+            )
+            if report["boxes"] == 0:
+                preview_label.setText(f"No '{src}' labels found in this recipe.")
+                apply_btn.setEnabled(False)
+            else:
+                preview_label.setText(
+                    f"Will change {report['boxes']} box(es) across {report['images']} image(s) "
+                    f"from '{src}' to '{tgt}'.\nThose images will be marked needs-review."
+                )
+                apply_btn.setEnabled(True)
+
+        def do_apply() -> None:
+            src = source_combo.currentText()
+            tgt = target_combo.currentText()
+            if src == tgt:
+                return
+            reply = QMessageBox.question(
+                dlg, "Bulk relabel",
+                f"Relabel all '{src}' to '{tgt}' in recipe {self.recipe.safe_name}?\n\n"
+                "This edits saved label files and cannot be undone from the canvas.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+            report = relabel_logic.apply_relabel(
+                ldir, match_label=src, new_label=tgt, new_class_id=names.index(tgt)
+            )
+            dlg.accept()
+            self._reset_recipe_image_index()
+            self._refresh_images(force=True)
+            self._update_dataset_summary()
+            if self.current_image_path and Path(self.current_image_path).exists():
+                self._load_image_path(Path(self.current_image_path))
+            self.status.showMessage(
+                f"Relabeled {report['boxes']} box(es) across {report['images']} image(s); marked needs-review.",
+                8000,
+            )
+
+        preview_btn.clicked.connect(do_preview)
+        apply_btn.clicked.connect(do_apply)
+        cancel_btn.clicked.connect(dlg.reject)
+        # Re-preview whenever the selection changes so Apply reflects current choice.
+        source_combo.currentIndexChanged.connect(lambda _i: apply_btn.setEnabled(False))
+        target_combo.currentIndexChanged.connect(lambda _i: apply_btn.setEnabled(False))
+        dlg.exec()
 
     def undo_canvas(self) -> None:
         if not self.canvas.undo():
