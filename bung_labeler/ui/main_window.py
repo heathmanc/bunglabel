@@ -287,6 +287,8 @@ class MainWindow(QMainWindow):
         next_queue_action.triggered.connect(self.next_in_review_queue)
         tools_menu.addAction(next_queue_action)
 
+        self.menuBar().setVisible(False)
+
     def _scroll_panel(self, widget: QWidget, min_width: int, preferred_width: int) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1513,19 +1515,6 @@ class MainWindow(QMainWindow):
                 color: #e5e7eb;
                 font-size: 9pt;
             }
-            QMenuBar {
-                background: #0b1220;
-                color: #dbeafe;
-                padding: 2px 6px;
-                spacing: 12px;
-                border-bottom: 1px solid #334155;
-            }
-            QMenuBar::item {
-                background: transparent;
-                padding: 4px 10px;
-                border-radius: 6px;
-            }
-            QMenuBar::item:selected { background: #1e293b; }
             QMenu {
                 background: #111827;
                 color: #e5e7eb;
