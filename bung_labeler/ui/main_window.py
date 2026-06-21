@@ -1386,12 +1386,6 @@ class MainWindow(QMainWindow):
         self.export_task_combo = QComboBox()
         self.export_task_combo.addItem("OBB dataset - batteries + bungs", "obb")
         self.export_task_combo.addItem("Detect boxes dataset - compatibility", "detect")
-        self.export_class_mode = QComboBox()
-        self.export_class_mode.addItem("Use annotation class names", "label_names")
-        self.export_class_mode.addItem("Model battery + model bung", "model_specific")
-        self.export_class_mode.addItem("Model battery + generic bung", "battery_model_generic_bung")
-        self.export_class_mode.addItem("Generic battery + generic bung", "generic")
-        self.export_class_mode.setCurrentIndex(0)
         exp = QPushButton("Export Dataset")
         exp.clicked.connect(self.export_yolo)
         exp_all = QPushButton("Export All")
@@ -1414,11 +1408,9 @@ class MainWindow(QMainWindow):
         export_btn_row2.addWidget(exp_sel)
         ev.addWidget(QLabel("Export task"))
         ev.addWidget(self.export_task_combo)
-        ev.addWidget(QLabel("Class export mode"))
-        ev.addWidget(self.export_class_mode)
         ev.addLayout(export_btn_row)
         ev.addLayout(export_btn_row2)
-        export_note = QLabel("YOLO OBB export. Reviewed and force-reviewed images only.")
+        export_note = QLabel("Exports annotation class names as-is. Reviewed and force-reviewed images only.")
         export_note.setWordWrap(True)
         export_note.setStyleSheet("color: #94a3b8;")
         ev.addWidget(export_note)
@@ -3996,7 +3988,10 @@ class MainWindow(QMainWindow):
         self.clahe_grid_slider.setValue(8)
 
     def _export_mode(self) -> str:
-        return self.export_class_mode.currentData() if hasattr(self, "export_class_mode") else "model_specific"
+        # Always export the annotation class names as-is. Generic/model-specific
+        # remaps were removed; the exporter still accepts class_mode for the
+        # legacy code path, so we pin it to label_names.
+        return "label_names"
 
     def _export_task(self) -> str:
         return self.export_task_combo.currentData() if hasattr(self, "export_task_combo") else "obb"
@@ -4030,7 +4025,7 @@ class MainWindow(QMainWindow):
             "Export complete",
             f"YOLO dataset exported to:\n{out}\n\nTraining file:\n{data_yaml}\n\n"
             f"Export counts:\n{summary}\n\n"
-            f"Task:\n{task}\nClass mode:\n{mode}\nReview filter:\nreviewed only\n\nSuggested command:\n{train_hint}"
+            f"Task:\n{task}\nClasses:\nannotation names as-is\nReview filter:\nreviewed only\n\nSuggested command:\n{train_hint}"
         )
         self.status.showMessage(f"Exported YOLO {task} dataset: {out}", 8000)
 
@@ -4056,12 +4051,17 @@ class MainWindow(QMainWindow):
             "Export All complete",
             f"Combined YOLO dataset exported to:\n{out}\n\nTraining file:\n{data_yaml}\nManifest:\n{manifest}\n\n"
             f"Export counts:\n{summary}\n\n"
-            f"Task:\n{task}\nClass mode:\n{mode}\nReview filter:\nreviewed only"
+            f"Task:\n{task}\nClasses:\nannotation names as-is\nReview filter:\nreviewed only"
         )
         self.status.showMessage(f"Exported combined YOLO {task} dataset: {out}", 8000)
 
     def _prompt_recipe_selection(self) -> list[str] | None:
-        """Modal checklist of recipes; returns chosen safe_names or None if cancelled."""
+        """Modal category + recipe checklist; returns chosen safe_names or None.
+
+        The operator first picks an equipment category, which filters the recipe
+        list below; recipes in the shown category are pre-checked so exporting a
+        whole machine is one click, while individual recipes can be unchecked.
+        """
         recipes = list_recipes()
         if not recipes:
             QMessageBox.information(self, "Export Selected", "No saved recipes to export.")
@@ -4070,17 +4070,49 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("Select recipes to export")
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel("Choose which recipes to combine into one export dataset:"))
+
+        cat_row = QHBoxLayout()
+        cat_row.addWidget(QLabel("Category"))
+        cat_combo = QComboBox()
+        cat_combo.addItem("All categories", None)
+        for cat in list_categories():
+            cat_combo.addItem(cat, cat)
+        cat_row.addWidget(cat_combo, 1)
+        v.addLayout(cat_row)
+
+        v.addWidget(QLabel("Recipes to combine into one export dataset:"))
         listw = QListWidget()
-        for r in recipes:
-            item = QListWidgetItem(f"{r.group} / {r.model}")
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            # Pre-check the active recipe so the common case is one click.
-            checked = (r.safe_name == self.recipe.safe_name)
-            item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
-            item.setData(Qt.ItemDataRole.UserRole, r.safe_name)
-            listw.addItem(item)
         v.addWidget(listw)
+
+        def repopulate():
+            wanted = cat_combo.currentData()
+            listw.clear()
+            for r in recipes:
+                rcat = recipe_category(r)
+                if wanted is not None and rcat != wanted:
+                    continue
+                item = QListWidgetItem(f"[{rcat}]  {r.group} / {r.model}")
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                # Pre-check everything in the shown category.
+                item.setCheckState(Qt.CheckState.Checked)
+                item.setData(Qt.ItemDataRole.UserRole, r.safe_name)
+                listw.addItem(item)
+
+        cat_combo.currentIndexChanged.connect(lambda _i: repopulate())
+        # Default to the active recipe's category for the common case.
+        start = cat_combo.findData(recipe_category(self.recipe))
+        cat_combo.setCurrentIndex(start if start >= 0 else 0)
+        repopulate()
+
+        sel_row = QHBoxLayout()
+        select_all = QPushButton("Select all shown")
+        clear_all = QPushButton("Clear")
+        select_all.clicked.connect(lambda: [listw.item(i).setCheckState(Qt.CheckState.Checked) for i in range(listw.count())])
+        clear_all.clicked.connect(lambda: [listw.item(i).setCheckState(Qt.CheckState.Unchecked) for i in range(listw.count())])
+        sel_row.addWidget(select_all)
+        sel_row.addWidget(clear_all)
+        v.addLayout(sel_row)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
@@ -4129,7 +4161,7 @@ class MainWindow(QMainWindow):
             f"Selected {len(chosen)} recipe(s) exported to:\n{out}\n\n"
             f"Training file:\n{data_yaml}\nManifest:\n{manifest}\n\n"
             f"Export counts:\n{summary}\n\n"
-            f"Task:\n{task}\nClass mode:\n{mode}\nReview filter:\nreviewed only"
+            f"Task:\n{task}\nClasses:\nannotation names as-is\nReview filter:\nreviewed only"
         )
         self.status.showMessage(f"Exported {len(chosen)} selected recipes ({task}): {out}", 8000)
 
