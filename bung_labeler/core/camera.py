@@ -45,18 +45,26 @@ def _gst_device_path(source: str | int) -> str:
     return str(source)
 
 
-def _build_gst_pipelines(device: str, width: int, height: int, fps: int) -> list[tuple[str, str]]:
-    """Return (pipeline_string, decode_label) pairs in priority order."""
+def _build_gst_pipelines(device: str, width: int, height: int, fps: int) -> list[tuple[str, str, int]]:
+    """Return (pipeline_string, decode_label, channels) triples in priority order.
+
+    HW-decode pipelines use nvvidconv to produce BGRx (4 ch) directly in
+    hardware, avoiding a software videoconvert YUV→BGR step on the ARM cores.
+    The CPU fallback uses videoconvert to produce BGR (3 ch).
+    ``channels`` tells GstNativeCamera.read() how to reshape the buffer.
+    """
     wh = f"width={width},height={height}"
     fr = f"framerate={fps}/1"
     src = f'v4l2src device={device} ! image/jpeg,{wh},{fr}'
-    # BGRx → videoconvert → BGR is the canonical output needed by the rest of the app.
-    tail = "! videoconvert ! video/x-raw,format=BGR ! appsink name=sink max-buffers=2 drop=true sync=false"
+    # Hardware path: nvvidconv outputs BGRx without involving any ARM-side
+    # colour-conversion.  4 bytes/pixel; read() drops the X byte via numpy slice.
+    hw_tail  = "! nvvidconv ! video/x-raw,format=BGRx ! appsink name=sink max-buffers=2 drop=true sync=false emit-signals=false"
+    # CPU fallback: jpegdec + videoconvert.  Slower but always available.
+    cpu_tail = "! videoconvert ! video/x-raw,format=BGR  ! appsink name=sink max-buffers=2 drop=true sync=false emit-signals=false"
     return [
-        (f"{src} ! nvv4l2decoder mjpeg=1 ! nvvidconv {tail}", "nvv4l2decoder"),
-        (f"{src} ! nvjpegdec ! nvvidconv {tail}", "nvjpegdec+nvvidconv"),
-        (f"{src} ! nvjpegdec ! videoconvert {tail}", "nvjpegdec+videoconvert"),
-        (f"{src} ! jpegdec {tail}", "jpegdec (CPU)"),
+        (f"{src} ! nvv4l2decoder mjpeg=1 {hw_tail}", "nvv4l2decoder",    4),
+        (f"{src} ! nvjpegdec           {hw_tail}",   "nvjpegdec",        4),
+        (f"{src} ! jpegdec             {cpu_tail}",  "jpegdec (CPU)",    3),
     ]
 
 
@@ -75,6 +83,7 @@ class GstNativeCamera:
         self._decode_label = ""
         self._width = 0
         self._height = 0
+        self._channels = 3   # 4 for BGRx (HW pipelines), 3 for BGR (CPU)
 
     def open(self, device: str, width: int, height: int, fps: int) -> tuple[bool, str]:
         """Try each hardware pipeline in order; return (ok, message)."""
@@ -86,7 +95,7 @@ class GstNativeCamera:
         self.close()
         pipelines = _build_gst_pipelines(device, width, height, fps)
         tried = []
-        for pipeline_str, label in pipelines:
+        for pipeline_str, label, channels in pipelines:
             try:
                 pipeline = Gst.parse_launch(pipeline_str)
                 sink = pipeline.get_by_name("sink")
@@ -112,6 +121,7 @@ class GstNativeCamera:
                 self._decode_label = label
                 self._width = width
                 self._height = height
+                self._channels = channels
                 return True, f"GStreamer native OK — decoder: {label} | pipeline: {pipeline_str}"
             except Exception as exc:
                 tried.append(f"{label}: {exc}")
@@ -130,7 +140,14 @@ class GstNativeCamera:
                 buf.unmap(info)
                 return False, None
             import numpy as np
-            frame = np.frombuffer(info.data, dtype=np.uint8).reshape(self._height, self._width, 3).copy()
+            raw = np.frombuffer(info.data, dtype=np.uint8).reshape(self._height, self._width, self._channels)
+            # BGRx (4ch, HW pipelines): drop the X byte to get BGR with no
+            # software colour conversion.  np.ascontiguousarray avoids a
+            # stride-layout mismatch that would break cv2 functions.
+            if self._channels == 4:
+                frame = np.ascontiguousarray(raw[:, :, :3])
+            else:
+                frame = raw.copy()
             buf.unmap(info)
             return True, frame
         except Exception:
