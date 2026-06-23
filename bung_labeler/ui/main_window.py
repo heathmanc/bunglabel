@@ -1525,7 +1525,7 @@ class MainWindow(QMainWindow):
         form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.backend_combo = QComboBox()
-        self.backend_combo.addItems(["Auto", "V4L2", "GStreamer", "FFmpeg", "Basler/Pylon"])
+        self.backend_combo.addItems(["Auto", "V4L2", "GStreamer", "GStreamer (native)", "FFmpeg", "Basler/Pylon"])
         self.backend_combo.setCurrentText(str(self.camera_settings.get("camera_backend", "V4L2")))
         self.backend_combo.currentTextChanged.connect(self._on_camera_backend_changed)
         self.backend_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -2326,7 +2326,7 @@ class MainWindow(QMainWindow):
         form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         backend_combo = QComboBox()
-        backend_combo.addItems(["Auto", "V4L2", "GStreamer", "FFmpeg", "Basler/Pylon"])
+        backend_combo.addItems(["Auto", "V4L2", "GStreamer", "GStreamer (native)", "FFmpeg", "Basler/Pylon"])
         backend_combo.setCurrentText(self.backend_combo.currentText())
         source_edit = QLineEdit(self.source_edit.text())
         source_edit.setPlaceholderText("0, /dev/video0, video.mp4, rtsp://, or Basler serial")
@@ -2832,18 +2832,28 @@ class MainWindow(QMainWindow):
 
     def _on_camera_backend_changed(self, backend: str) -> None:
         is_basler = backend == "Basler/Pylon"
+        is_gst_native = backend == "GStreamer (native)"
         if hasattr(self, "source_edit"):
-            # Keep Source editable for Basler so a serial/model filter can be typed when needed.
             self.source_edit.setEnabled(True)
-            self.source_edit.setPlaceholderText("Optional Basler serial/model" if is_basler else "0, /dev/video0, video.mp4, or rtsp://")
+            if is_basler:
+                self.source_edit.setPlaceholderText("Optional Basler serial/model")
+            elif is_gst_native:
+                self.source_edit.setPlaceholderText("0  or  /dev/video0  (required for GStreamer native)")
+            else:
+                self.source_edit.setPlaceholderText("0, /dev/video0, video.mp4, or rtsp://")
         if hasattr(self, "force_v4l2_check"):
-            self.force_v4l2_check.setEnabled(not is_basler)
+            self.force_v4l2_check.setEnabled(not is_basler and not is_gst_native)
         if hasattr(self, "mjpg_check"):
-            self.mjpg_check.setEnabled(not is_basler)
+            self.mjpg_check.setEnabled(not is_basler and not is_gst_native)
         if hasattr(self, "basler_hint_label"):
             self.basler_hint_label.setVisible(is_basler)
         if is_basler and hasattr(self, "status"):
             self.status.showMessage("Basler/Pylon selected. Source may be left blank or set to a serial/model filter.", 5000)
+        if is_gst_native and hasattr(self, "status"):
+            self.status.showMessage(
+                "GStreamer (native) selected — bypasses OpenCV GStreamer build flags. "
+                "Requires python3-gi + JetPack GStreamer plugins for hardware MJPG decode.", 7000
+            )
 
     def _parse_source(self):
         """Return the camera source in the form expected by the selected backend.
@@ -2912,6 +2922,8 @@ class MainWindow(QMainWindow):
                 + "\n\nTry these quick checks:\n"
                 + "• Source 0, then 1, then /dev/video0 for OpenCV cameras\n"
                 + "• Backend V4L2 for normal USB webcams\n"
+                + "• Backend GStreamer (native) for Jetson — bypasses OpenCV GStreamer build flags\n"
+                + "  Requires: sudo apt install python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-tools\n"
                 + "• Backend Basler/Pylon for Basler industrial cameras\n"
                 + "• Width/Height set to Default\n"
                 + "• Basler test: python -c \"from pypylon import pylon; print(pylon.TlFactory.GetInstance().EnumerateDevices())\"",

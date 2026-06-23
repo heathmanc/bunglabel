@@ -14,6 +14,208 @@ except ImportError:
     pylon = None
 
 
+# ---------------------------------------------------------------------------
+# Native GStreamer backend (fix #1: Jetson MJPG FPS)
+# ---------------------------------------------------------------------------
+# The pip opencv-python wheel has GStreamer compiled out on ARM/Jetson, so
+# cv2.VideoCapture(..., cv2.CAP_GSTREAMER) silently falls back to V4L2 with
+# software MJPG decode (libjpeg), capping real throughput at ~15 fps even
+# when the camera reports 30 fps.  This class drives GStreamer directly via
+# python-gi (PyGObject) + appsink, bypassing OpenCV's build flags entirely.
+# Hardware-decode pipelines are tried in order; the first that reaches PLAYING
+# and delivers a sample is used.
+
+try:
+    import gi
+    gi.require_version("Gst", "1.0")
+    gi.require_version("GstApp", "1.0")
+    from gi.repository import Gst, GstApp  # noqa: F401
+    if not Gst.is_initialized():
+        Gst.init(None)
+    _GST_AVAILABLE = True
+except Exception:
+    _GST_AVAILABLE = False
+
+
+def _gst_device_path(source: str | int) -> str:
+    if isinstance(source, int):
+        return f"/dev/video{source}"
+    if str(source).isdigit():
+        return f"/dev/video{source}"
+    return str(source)
+
+
+def _build_gst_pipelines(device: str, width: int, height: int, fps: int) -> list[tuple[str, str]]:
+    """Return (pipeline_string, decode_label) pairs in priority order."""
+    wh = f"width={width},height={height}"
+    fr = f"framerate={fps}/1"
+    src = f'v4l2src device={device} ! image/jpeg,{wh},{fr}'
+    # BGRx → videoconvert → BGR is the canonical output needed by the rest of the app.
+    tail = "! videoconvert ! video/x-raw,format=BGR ! appsink name=sink max-buffers=2 drop=true sync=false"
+    return [
+        (f"{src} ! nvv4l2decoder mjpeg=1 ! nvvidconv {tail}", "nvv4l2decoder"),
+        (f"{src} ! nvjpegdec ! nvvidconv {tail}", "nvjpegdec+nvvidconv"),
+        (f"{src} ! nvjpegdec ! videoconvert {tail}", "nvjpegdec+videoconvert"),
+        (f"{src} ! jpegdec {tail}", "jpegdec (CPU)"),
+    ]
+
+
+class GstNativeCamera:
+    """Drive a USB MJPG camera via GStreamer python-gi, bypassing OpenCV.
+
+    On Jetson (JetPack) the pip opencv-python wheel has no GStreamer support,
+    so the only way to get hardware MJPG decode and 30 fps is to talk to
+    GStreamer directly.  This class is instantiated only when the user selects
+    "GStreamer (native)" as the backend.
+    """
+
+    def __init__(self) -> None:
+        self._pipeline = None
+        self._sink = None
+        self._decode_label = ""
+        self._width = 0
+        self._height = 0
+
+    def open(self, device: str, width: int, height: int, fps: int) -> tuple[bool, str]:
+        """Try each hardware pipeline in order; return (ok, message)."""
+        if not _GST_AVAILABLE:
+            return False, (
+                "python-gi (PyGObject) is not installed or GStreamer 1.0 is not available.\n"
+                "Install with: sudo apt install python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-tools"
+            )
+        self.close()
+        pipelines = _build_gst_pipelines(device, width, height, fps)
+        tried = []
+        for pipeline_str, label in pipelines:
+            try:
+                pipeline = Gst.parse_launch(pipeline_str)
+                sink = pipeline.get_by_name("sink")
+                ret = pipeline.set_state(Gst.State.PLAYING)
+                if ret == Gst.StateChangeReturn.FAILURE:
+                    pipeline.set_state(Gst.State.NULL)
+                    tried.append(f"{label}: pipeline failed to start")
+                    continue
+                # Wait up to 3 s for PLAYING to be reached (hardware init).
+                ok_state, _cur, _pend = pipeline.get_state(3 * Gst.SECOND)
+                if ok_state != Gst.StateChangeReturn.SUCCESS:
+                    pipeline.set_state(Gst.State.NULL)
+                    tried.append(f"{label}: timed out reaching PLAYING")
+                    continue
+                # Pull one sample to confirm the pipeline delivers frames.
+                sample = sink.emit("pull-sample")
+                if sample is None:
+                    pipeline.set_state(Gst.State.NULL)
+                    tried.append(f"{label}: no sample delivered")
+                    continue
+                self._pipeline = pipeline
+                self._sink = sink
+                self._decode_label = label
+                self._width = width
+                self._height = height
+                return True, f"GStreamer native OK — decoder: {label} | pipeline: {pipeline_str}"
+            except Exception as exc:
+                tried.append(f"{label}: {exc}")
+        return False, "GStreamer native: all pipelines failed.\n" + "\n".join(f"  • {t}" for t in tried)
+
+    def read(self) -> tuple[bool, object | None]:
+        if self._sink is None:
+            return False, None
+        try:
+            sample = self._sink.emit("pull-sample")
+            if sample is None:
+                return False, None
+            buf = sample.get_buffer()
+            ok, info = buf.map(Gst.MapFlags.READ)
+            if not ok:
+                buf.unmap(info)
+                return False, None
+            import numpy as np
+            frame = np.frombuffer(info.data, dtype=np.uint8).reshape(self._height, self._width, 3).copy()
+            buf.unmap(info)
+            return True, frame
+        except Exception:
+            return False, None
+
+    def close(self) -> None:
+        if self._pipeline is not None:
+            try:
+                self._pipeline.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+        self._pipeline = None
+        self._sink = None
+
+    def is_open(self) -> bool:
+        return self._pipeline is not None and self._sink is not None
+
+
+# ---------------------------------------------------------------------------
+# V4L2-ctl exposure helper (fix #2: USB/GStreamer exposure)
+# ---------------------------------------------------------------------------
+# GStreamer's v4l2src does not reliably expose UVC exposure controls via the
+# GStreamer property API; use v4l2-ctl on the device node instead.
+# Both modern (auto_exposure / exposure_time_absolute) and legacy
+# (exposure_auto / exposure_absolute) UVC control names are tried.
+
+def _v4l2_set(device: str, ctrl: str, value: int | str) -> bool:
+    """Set a single v4l2 control; return True on success."""
+    if shutil.which("v4l2-ctl") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["v4l2-ctl", "-d", device, f"--set-ctrl={ctrl}={value}"],
+            capture_output=True, text=True, timeout=3,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _set_usb_exposure_v4l2(device: str, auto: bool, exposure_us: int | None) -> str:
+    """Apply exposure/gain to a USB camera via v4l2-ctl on the device node.
+
+    Tries both the modern UVC control names (auto_exposure,
+    exposure_time_absolute) and the legacy names (exposure_auto,
+    exposure_absolute) so it works across kernel versions.
+
+    V4L2 exposure_time_absolute uses 100 µs units, so exposure_us is divided
+    by 100.  Defaults to auto-exposure for non-Basler backends.
+    """
+    if shutil.which("v4l2-ctl") is None:
+        return "v4l2-ctl not found (install v4l-utils); exposure not set"
+    if not device or not device.startswith("/dev/video"):
+        return f"exposure via v4l2-ctl skipped: device {device!r} is not a /dev/videoN node"
+
+    if auto:
+        # Modern UVC: auto_exposure=3 means aperture priority (auto).
+        # Legacy UVC: exposure_auto=3 or exposure_auto=1 depending on driver.
+        if _v4l2_set(device, "auto_exposure", 3):
+            return "auto exposure on (auto_exposure=3)"
+        if _v4l2_set(device, "auto_exposure", 1):
+            return "auto exposure on (auto_exposure=1)"
+        if _v4l2_set(device, "exposure_auto", 3):
+            return "auto exposure on (exposure_auto=3)"
+        if _v4l2_set(device, "exposure_auto", 1):
+            return "auto exposure on (exposure_auto=1)"
+        return "auto exposure requested; no matching UVC control found (may already be auto)"
+
+    # Manual exposure.
+    # Disable auto first (value 1 = manual for modern UVC; value 0 for legacy).
+    _v4l2_set(device, "auto_exposure", 1) or _v4l2_set(device, "exposure_auto", 1)
+
+    us = int(exposure_us or 0)
+    if us <= 0:
+        return "manual exposure selected but no value given"
+
+    # V4L2 exposure_time_absolute is in units of 100 µs.
+    abs_val = max(1, us // 100)
+    if _v4l2_set(device, "exposure_time_absolute", abs_val):
+        return f"manual exposure {us} µs (exposure_time_absolute={abs_val})"
+    if _v4l2_set(device, "exposure_absolute", abs_val):
+        return f"manual exposure {us} µs (exposure_absolute={abs_val})"
+    return f"manual exposure requested ({us} µs) but no matching UVC control was writable"
+
+
 @dataclass
 class CameraOpenResult:
     ok: bool
@@ -81,12 +283,17 @@ class CameraSource:
         "Auto": cv2.CAP_ANY,
         "V4L2": getattr(cv2, "CAP_V4L2", cv2.CAP_ANY),
         "GStreamer": getattr(cv2, "CAP_GSTREAMER", cv2.CAP_ANY),
+        "GStreamer (native)": None,   # handled by GstNativeCamera, not cv2
         "FFmpeg": getattr(cv2, "CAP_FFMPEG", cv2.CAP_ANY),
     }
+
+    # GstNativeCamera instance when backend is "GStreamer (native)".
+    _gst: GstNativeCamera | None = None
 
     def __init__(self) -> None:
         self.cap = None
         self.converter = None
+        self._gst: GstNativeCamera | None = None
         self.source: str | int | None = None
         self.last_result = CameraOpenResult(False, "Not opened")
 
@@ -214,18 +421,32 @@ class CameraSource:
     def set_exposure(self, auto: bool = True, exposure_us: int | None = None) -> str:
         """Apply exposure settings to the currently opened camera.
 
-        Basler/Pylon uses microseconds. OpenCV/V4L2 exposure units vary by driver,
-        so for non-Basler cameras the numeric value is passed through directly.
+        Basler/Pylon uses Basler SDK nodes.
+        GStreamer (native) and V4L2 use v4l2-ctl on the device node, because
+        GStreamer v4l2src does not reliably expose UVC controls and because
+        CAP_PROP_AUTO_EXPOSURE semantics vary across OpenCV/kernel versions.
+        Other OpenCV backends fall back to CAP_PROP_AUTO_EXPOSURE.
         """
-        if self.cap is None:
-            return "Exposure skipped: camera is not open."
+        bn = self.last_result.backend_name
         try:
-            if self.last_result.backend_name == "Basler/Pylon":
+            if bn == "Basler/Pylon":
                 return self._set_basler_exposure(auto, exposure_us)
+
+            # For GStreamer native and V4L2 backends, use v4l2-ctl.
+            if bn in ("GStreamer (native)", "V4L2"):
+                device = _source_to_device(self.source) or ""
+                if not device:
+                    # Fall through to OpenCV path if source is not a /dev/video node.
+                    pass
+                else:
+                    return _set_usb_exposure_v4l2(device, auto, exposure_us)
+
+            if self.cap is None:
+                return "Exposure skipped: camera is not open."
             if auto:
                 ok = bool(self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75))
                 return "auto exposure on" if ok else "auto exposure may not be supported by this backend"
-            # V4L2 commonly uses 0.25 for manual. Some cameras ignore it.
+            # V4L2/OpenCV: 0.25 commonly means manual on UVC.
             self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
             value = int(exposure_us or 0)
             ok = bool(self.cap.set(cv2.CAP_PROP_EXPOSURE, float(value))) if value else False
@@ -369,6 +590,9 @@ class CameraSource:
         if backend == "Basler/Pylon":
             return self._open_basler(source, width, height, fps, threaded=threaded, exposure_auto=exposure_auto, exposure_us=exposure_us)
 
+        if backend == "GStreamer (native)":
+            return self._open_gst_native(source, width, height, fps, threaded=threaded, exposure_auto=exposure_auto, exposure_us=exposure_us)
+
         if force_v4l2:
             force_message = force_v4l2_format(source, width, height, fps, pixelformat="MJPG")
 
@@ -471,10 +695,79 @@ class CameraSource:
 
         return True
 
+    def _open_gst_native(
+        self,
+        source: str | int,
+        width: int | None,
+        height: int | None,
+        fps: int | None,
+        threaded: bool,
+        exposure_auto: bool,
+        exposure_us: int | None,
+    ) -> bool:
+        device = _gst_device_path(source)
+        w = int(width or 1920)
+        h = int(height or 1080)
+        f = int(fps or 30)
+
+        gst = GstNativeCamera()
+        ok, msg = gst.open(device, w, h, f)
+        if not ok:
+            self.last_result = CameraOpenResult(False, msg, "GStreamer (native)", w, h, f)
+            return False
+
+        self._gst = gst
+        # Apply exposure via v4l2-ctl (GStreamer v4l2src doesn't expose UVC
+        # controls reliably through the GStreamer property API).
+        exposure_msg = _set_usb_exposure_v4l2(device, exposure_auto, exposure_us)
+
+        # Grab a warmup frame to confirm the pipeline delivers data.
+        ok_any = False
+        last_shape = None
+        for _ in range(5):
+            ok_f, frame = gst.read()
+            if ok_f and frame is not None:
+                ok_any = True
+                last_shape = frame.shape
+                with self._lock:
+                    self._latest_frame = frame
+                    self._latest_ok = True
+                    self._frame_seq += 1
+                break
+            time.sleep(0.1)
+
+        if not ok_any:
+            self.last_result = CameraOpenResult(
+                False,
+                f"GStreamer native pipeline opened but no frames delivered. {msg}",
+                "GStreamer (native)", w, h, f,
+            )
+            gst.close()
+            self._gst = None
+            return False
+
+        self.last_result = CameraOpenResult(
+            True,
+            f"{msg} | Exposure: {exposure_msg}. First frame shape: {last_shape}.",
+            "GStreamer (native)", float(w), float(h), float(f),
+        )
+
+        if threaded:
+            self._running = True
+            self._fps_t0 = time.perf_counter()
+            self._frame_counter = 0
+            self._read_fps = 0.0
+            self._thread = threading.Thread(target=self._reader_loop, name="BungVisionCameraReader", daemon=True)
+            self._thread.start()
+
+        return True
+
     def _reader_loop(self) -> None:
         while self._running and self.is_open():
             if self.last_result.backend_name == "Basler/Pylon":
                 ok, frame = self._read_basler_frame(timeout_ms=1000)
+            elif self._gst is not None:
+                ok, frame = self._gst.read()
             else:
                 ok, frame = self.cap.read()
             if ok and frame is not None:
@@ -507,6 +800,9 @@ class CameraSource:
 
         if self.last_result.backend_name == "Basler/Pylon":
             return self._read_basler_frame(timeout_ms=1000)
+
+        if self._gst is not None:
+            return self._gst.read()
 
         ok, frame = self.cap.read()
         if ok and frame is not None:
@@ -545,6 +841,13 @@ class CameraSource:
                 pass
         self._thread = None
 
+        if self._gst is not None:
+            try:
+                self._gst.close()
+            except Exception:
+                pass
+        self._gst = None
+
         if self.cap is not None:
             try:
                 if self.last_result.backend_name == "Basler/Pylon" and pylon is not None:
@@ -563,6 +866,8 @@ class CameraSource:
             self._latest_ok = False
 
     def is_open(self) -> bool:
+        if self._gst is not None:
+            return self._gst.is_open()
         if self.cap is None:
             return False
         try:
